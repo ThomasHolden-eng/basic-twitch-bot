@@ -27,6 +27,7 @@ type APIClient struct {
 	clientID          string
 	oauthTokenManager *tokenManager
 	appTokenManager   *tokenManager
+	rateLimit         *tokenBucket
 	httpClient        *http.Client
 	tempClip          *clipStore
 	clipLock          sync.Mutex
@@ -48,9 +49,11 @@ func NewAPIClient(username, clientID, clientSecret string) *APIClient {
 		clientID:          clientID,
 		oauthTokenManager: oAuthTokenManager,
 		appTokenManager:   appAccessToken,
+		rateLimit:         &tokenBucket{},
 		httpClient:        &http.Client{},
 	}
 	client.setUserID(username)
+	go client.rateLimit.startTokenTimer()
 	return client
 }
 
@@ -394,6 +397,9 @@ func (c *APIClient) SendChatMessage(broadcasterID, message string) error {
 		return fmt.Errorf("failed to marshal chat message request: %w", err)
 	}
 
+	if err := c.rateLimit.takeToken(); err != nil {
+		return fmt.Errorf("rate limit reached: %w", err)
+	}
 	respBody, statusCode, err := c.doAuthenticatedRequest(
 		"POST", url, bytes.NewBuffer(body), c.appTokenManager.get(),
 	)

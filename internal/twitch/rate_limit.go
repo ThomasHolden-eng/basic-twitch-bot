@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// TokenBucket is a simple rate limiting manager for the twitch API
-type TokenBucket struct {
+// tokenBucket is a simple rate limiting manager for the twitch API
+type tokenBucket struct {
 	tokensLeft int
 	mutex      sync.Mutex
 }
 
-// TakeToken returns an error if the bucket is empty, removes a token otherwise
-func (t *TokenBucket) TakeToken() error {
+// takeToken returns an error if the bucket is empty, removes a token otherwise
+func (t *tokenBucket) takeToken() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -25,11 +25,11 @@ func (t *TokenBucket) TakeToken() error {
 }
 
 /*
- * StartTokenTimer begins the timer to add a token to the token bucket
+ * startTokenTimer begins the timer to add a token to the token bucket
  * This is the direct implementation for rate limiting the chatbot (100 messages/30s)
  * Refer to https://dev.twitch.tv/docs/chat/#twitch-chat-rate-limits for more info
  */
-func (t *TokenBucket) StartTokenTimer() {
+func (t *tokenBucket) startTokenTimer() {
 	t.mutex.Lock()
 	t.tokensLeft = 50
 	t.mutex.Unlock()
