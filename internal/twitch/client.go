@@ -18,20 +18,22 @@ import (
 )
 
 const (
-	helixBaseURL = "https://api.twitch.tv/helix"
+	helixBaseURL = "https://api.twitch.tv/helix" // The base URL for the Helix API
 )
 
 // APIClient holds the necessary information to communicate with the Twitch API
 type APIClient struct {
-	ClientID          string
+	UserID            string
+	clientID          string
 	oauthTokenManager *tokenManager
 	appTokenManager   *tokenManager
 	httpClient        *http.Client
-	UserID            string
+	tempClip          *clipStore
+	clipLock          sync.Mutex
 }
 
 // NewAPIClient creates a new client for the Twitch API
-func NewAPIClient(clientID, clientSecret string) *APIClient {
+func NewAPIClient(username, clientID, clientSecret string) *APIClient {
 	oAuthTokenManager, err := getOAuthTokenManager(clientID, clientSecret)
 	if err != nil {
 		log.Fatal(err)
@@ -42,78 +44,87 @@ func NewAPIClient(clientID, clientSecret string) *APIClient {
 		log.Fatal(err)
 	}
 
-	return &APIClient{
-		ClientID:          clientID,
+	client := &APIClient{
+		clientID:          clientID,
 		oauthTokenManager: oAuthTokenManager,
 		appTokenManager:   appAccessToken,
 		httpClient:        &http.Client{},
 	}
+	client.setUserID(username)
+	return client
 }
 
-// TwitchUser represents a user object from the Twitch API
-type TwitchUser struct {
+// twitchUser represents a user object from the Twitch API
+type twitchUser struct {
 	ID    string `json:"id"`
 	Login string `json:"login"`
 }
 
-// Follower represents the follower relationship data from the Twitch API
-type Follower struct {
+// follower represents the follower relationship data from the Twitch API
+type follower struct {
 	FollowedAt time.Time `json:"followed_at"`
 }
 
-// FollowerResponse is the top-level structure of the get users follows API response
-type FollowerResponse struct {
-	Data []Follower `json:"data"`
+// followerResponse is the top-level structure of the get users follows API response
+type followerResponse struct {
+	Data []follower `json:"data"`
 }
 
-// FollowerCountResponse is the structure for the total follower count from the API
-type FollowerCountResponse struct {
+// followerCountResponse is the structure for the total follower count from the API
+type followerCountResponse struct {
 	Total int `json:"total"`
 }
 
-// ViewerCountResponse is the structure for the total viewer count from the API
-type ViewerCountResponse struct {
+// viewerCountResponse is the structure for the total viewer count from the API
+type viewerCountResponse struct {
 	Total int `json:"total"`
 }
 
-// Stream represents a stream object from the Twitch API
-type Stream struct {
+// stream represents a stream object from the Twitch API
+type stream struct {
 	StartedAt   time.Time `json:"started_at"`
 	Type        string    `json:"type"`
 	ViewerCount int       `json:"viewer_count"`
 }
 
-// Clip represents a clips access points
-type Clip struct {
+// clip represents a clips access points
+type clip struct {
 	ID       string `json:"id"`
 	Edit_Url string `json:"edit_url"`
 }
 
-// ClipStore is a container to hold a clip to prevent repeat clips
-type ClipStore struct {
+// clipStore is a container to hold a clip to prevent repeat clips
+type clipStore struct {
 	Url       string
 	Timestamp int64
 }
 
-// StreamResponse is the top-level structure of the get streams API response
-type StreamResponse struct {
-	Data []Stream `json:"data"`
+// streamResponse is the top-level structure of the get streams API response
+type streamResponse struct {
+	Data []stream `json:"data"`
 }
 
-// UserResponse is the top-level structure of the get users API response
-type UserResponse struct {
-	Data []TwitchUser `json:"data"`
+// userResponse is the top-level structure of the get users API response
+type userResponse struct {
+	Data []twitchUser `json:"data"`
 }
 
-// ClipResponse is the top-level structure of the create clip API response
-type ClipResponse struct {
-	Data []Clip `json:"data"`
+// clipResponse is the top-level structure of the create clip API response
+type clipResponse struct {
+	Data []clip `json:"data"`
 }
 
-// TwitchChannelUpdateRequest is the structure of a request to change stream details
-type TwitchChannelUpdateRequest struct {
+// twitchChannelUpdateRequest is the structure of a request to change stream details
+type twitchChannelUpdateRequest struct {
 	GameID string `json:"game_id"`
 	Title  string `json:"title"`
+}
+
+// sendChatMessageRequest is the request body for sending a chat message
+type sendChatMessageRequest struct {
+	BroadcasterID string `json:"broadcaster_id"`
+	SenderID      string `json:"sender_id"`
+	Message       string `json:"message"`
 }
 
 // doRequestWithRetry performs an HTTP request with a retry mechanism.
@@ -140,8 +151,35 @@ func (c *APIClient) doRequestWithRetry(req *http.Request, maxRetriesOpt ...int) 
 	return nil, fmt.Errorf("request failed after %d retries: %w", maxRetries, err)
 }
 
-// SetUserID validates the bot's token and stores its own User ID
-func (c *APIClient) SetUserID(login string) error {
+// doAuthenticatedRequest builds, executes, and reads an authenticated HTTP request.
+// It sets the standard Client-ID and Bearer token headers, retries on failure,
+// and returns the raw response body.
+func (c *APIClient) doAuthenticatedRequest(method, url string, body io.Reader, token string) ([]byte, int, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if token != "" {
+		req.Header.Add("Client-ID", c.clientID)
+		req.Header.Add("Authorization", "Bearer "+token)
+	}
+	if body != nil {
+		req.Header.Add("Content-Type", "application/json")
+	}
+
+	resp, err := c.doRequestWithRetry(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	return respBody, resp.StatusCode, err
+}
+
+// setUserID validates the bot's token and stores its own User ID
+func (c *APIClient) setUserID(login string) error {
 	botUser, err := c.GetUserByLogin(login)
 	if err != nil {
 		log.Printf("Error setting bot id with string, '%s': %v", login, err)
@@ -153,31 +191,16 @@ func (c *APIClient) SetUserID(login string) error {
 }
 
 // GetUserByLogin fetches user information by their login name
-func (c *APIClient) GetUserByLogin(login string) (*TwitchUser, error) {
+func (c *APIClient) GetUserByLogin(login string) (*twitchUser, error) {
 	login = url.QueryEscape(login)
 
 	url := fmt.Sprintf("%s/users?login=%s", helixBaseURL, login)
-	req, err := http.NewRequest("GET", url, nil)
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Client-ID", c.ClientID)
-
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.doRequestWithRetry(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var userResp UserResponse
+	var userResp userResponse
 	if err := json.Unmarshal(body, &userResp); err != nil {
 		return nil, err
 	}
@@ -190,31 +213,17 @@ func (c *APIClient) GetUserByLogin(login string) (*TwitchUser, error) {
 }
 
 // GetFollowSince fetches how long a user has followed a channel
-func (c *APIClient) GetFollowSince(broadcasterID, userID string) (*Follower, error) {
+func (c *APIClient) GetFollowSince(broadcasterID, userID string) (*follower, error) {
 	broadcasterID = url.QueryEscape(broadcasterID)
 	userID = url.QueryEscape(userID)
 
 	url := fmt.Sprintf("%s/channels/followers?broadcaster_id=%s&user_id=%s", helixBaseURL, broadcasterID, userID)
-	req, err := http.NewRequest("GET", url, nil)
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.doRequestWithRetry(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var followResp FollowerResponse
+	var followResp followerResponse
 	if err := json.Unmarshal(body, &followResp); err != nil {
 		return nil, err
 	}
@@ -231,26 +240,12 @@ func (c *APIClient) GetFollowerNumber(broadcasterID string) (int, error) {
 	broadcasterID = url.QueryEscape(broadcasterID)
 
 	url := fmt.Sprintf("%s/channels/followers?broadcaster_id=%s", helixBaseURL, broadcasterID)
-	req, err := http.NewRequest("GET", url, nil)
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
 	if err != nil {
 		return 0, err
 	}
 
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.doRequestWithRetry(req, 2)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	var totalFollows FollowerCountResponse
+	var totalFollows followerCountResponse
 	if err := json.Unmarshal(body, &totalFollows); err != nil {
 		return 0, err
 	}
@@ -274,30 +269,16 @@ func (c *APIClient) GetViewerNumber(broadcasterLogin string) (int, error) {
 }
 
 // GetStream fetches stream information for a channel
-func (c *APIClient) GetStream(broadcasterLogin string) (*Stream, error) {
+func (c *APIClient) GetStream(broadcasterLogin string) (*stream, error) {
 	broadcasterLogin = url.QueryEscape(broadcasterLogin)
 
 	url := fmt.Sprintf("%s/streams?user_login=%s", helixBaseURL, broadcasterLogin)
-	req, err := http.NewRequest("GET", url, nil)
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var streamResp StreamResponse
+	var streamResp streamResponse
 	if err := json.Unmarshal(body, &streamResp); err != nil {
 		return nil, err
 	}
@@ -315,28 +296,16 @@ func (c *APIClient) GetStreamElementsWatchtime(channelLogin, userLogin string) (
 	userLogin = url.QueryEscape(userLogin)
 
 	url := fmt.Sprintf("https://api.streamelements.com/kappa/v2/points/%s/%s", channelLogin, userLogin)
-
-	req, err := http.NewRequest("GET", url, nil)
+	body, statusCode, err := c.doAuthenticatedRequest("GET", url, nil, "")
 	if err != nil {
 		return 0, err
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 404 {
+	if statusCode == 404 {
 		return 0, fmt.Errorf("This user has no watch time recorded by StreamElements in this channel.")
 	}
-	if resp.StatusCode != 200 {
-		return 0, fmt.Errorf("streamelements API returned status: %s", resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
+	if statusCode != 200 {
+		return 0, fmt.Errorf("streamelements API returned status: %d", statusCode)
 	}
 
 	var result map[string]interface{}
@@ -355,40 +324,23 @@ func (c *APIClient) GetStreamElementsWatchtime(channelLogin, userLogin string) (
 	return duration, nil
 }
 
-var tempClip *ClipStore = nil
-var clipLock sync.Mutex
-
 // CreateClip creates a clip and sends its url to chat
 func (c *APIClient) CreateClip(broadcasterID string) (string, error) {
-	clipLock.Lock()
-	defer clipLock.Unlock()
-	if tempClip != nil && tempClip.Timestamp+15 > time.Now().Unix() {
-		return "", fmt.Errorf("clip called too recently: %ds ago", time.Now().Unix()-tempClip.Timestamp)
+	c.clipLock.Lock()
+	defer c.clipLock.Unlock()
+	if c.tempClip != nil && c.tempClip.Timestamp+15 > time.Now().Unix() {
+		return "", fmt.Errorf("clip called too recently: %ds ago", time.Now().Unix()-c.tempClip.Timestamp)
 	}
 
 	broadcasterID = url.QueryEscape(broadcasterID)
 
 	url := fmt.Sprintf("https://api.twitch.tv/helix/clips?broadcaster_id=%s", broadcasterID)
-	req, err := http.NewRequest("POST", url, nil)
+	body, _, err := c.doAuthenticatedRequest("POST", url, nil, c.oauthTokenManager.get())
 	if err != nil {
 		return "", err
 	}
 
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.doRequestWithRetry(req, 2)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var clip_response ClipResponse
+	var clip_response clipResponse
 	if err := json.Unmarshal(body, &clip_response); err != nil {
 		return "", err
 	}
@@ -397,142 +349,41 @@ func (c *APIClient) CreateClip(broadcasterID string) (string, error) {
 		return "", fmt.Errorf("clip creation failed, no data returned in response: %s", string(body))
 	}
 
-	tempClip = new(ClipStore)
-	tempClip.Url = ("https://clips.twitch.tv/" + clip_response.Data[0].ID)
-	tempClip.Timestamp = time.Now().Unix()
+	c.tempClip = new(clipStore)
+	c.tempClip.Url = ("https://clips.twitch.tv/" + clip_response.Data[0].ID)
+	c.tempClip.Timestamp = time.Now().Unix()
 
-	clip_creation_timer := time.NewTimer(1 * time.Second)
+	clip_creation_timer := time.NewTimer(3 * time.Second)
 
-	go c.prepClip(tempClip.Url + "/edit")
+	go c.prepClip(c.tempClip.Url + "/edit")
 	<-clip_creation_timer.C
 
-	return tempClip.Url, nil
+	return c.tempClip.Url, nil
 }
 
-// prepClip is designed to access tempClip.Url/edit to generate a thumbnail
+// prepClip is designed to access c.tempClip.Url/edit to generate a thumbnail
 func (c *APIClient) prepClip(url string) {
-	timeoutTimer := time.NewTimer(15 * time.Second)
 	var logMessage string
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			req, err := http.NewRequest("GET", url, nil)
-			if err != nil {
-				logMessage = fmt.Sprintf("Failed to form new http request: %v", err)
-				continue
-			}
-
-			req.Header.Add("Client-ID", c.ClientID)
-			req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-			resp, err := c.doRequestWithRetry(req)
-			if err != nil {
-				logMessage = fmt.Sprintf("Error accessing clip: %v", err)
-				continue
-			}
-
-			if resp.StatusCode == http.StatusOK {
-				resp.Body.Close()
-				return
-			}
-
-			resp.Body.Close()
-		case <-timeoutTimer.C:
-			log.Printf("Timed out clip access @(%v) after 15 seconds: %v", url, logMessage)
+	for range 3 {
+		<-ticker.C
+		_, statusCode, err := c.doAuthenticatedRequest("GET", url, nil, "")
+		if statusCode == http.StatusOK && err == nil {
 			return
 		}
+		logMessage = fmt.Sprintf("error: %v, status: %d", err, statusCode)
 	}
-}
-
-// SetTitle (theoretically) changes the users title
-func (c *APIClient) SetTitle(broadcasterID, title string) error {
-	broadcasterID = url.QueryEscape(broadcasterID)
-
-	data := TwitchChannelUpdateRequest{Title: title}
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf("%s/channels?broadcaster_id=%s", helixBaseURL, broadcasterID)
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.doRequestWithRetry(req, 2)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("twitch API error: %s (%d) - %s",
-			resp.Status,
-			resp.StatusCode,
-			string(body),
-		)
-	}
-
-	return nil
-}
-
-// SetTitle (theoretically) changes the users game
-func (c *APIClient) SetGame(broadcasterID, game string) error {
-	broadcasterID = url.QueryEscape(broadcasterID)
-
-	data := TwitchChannelUpdateRequest{GameID: game}
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf("%s/channels?broadcaster_id=%s", helixBaseURL, broadcasterID)
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+c.oauthTokenManager.get())
-
-	resp, err := c.doRequestWithRetry(req, 2)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	_, err = io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	log.Printf("Timed out clip access @(%s) after 15 seconds: (%s)", url, logMessage)
 }
 
 // SendChatMessage sends a message to a Twitch channel using the Helix API.
-func (c *APIClient) SendChatMessage(broadcasterID, appAccessToken, message string) error {
-
-	// SendChatMessageRequest is the request body for sending a chat message
-	type SendChatMessageRequest struct {
-		BroadcasterID string `json:"broadcaster_id"`
-		SenderID      string `json:"sender_id"`
-		Message       string `json:"message"`
-	}
-
+func (c *APIClient) SendChatMessage(broadcasterID, message string) error {
 	url := helixBaseURL + "/chat/messages"
 
-	msgRequest := SendChatMessageRequest{
+	msgRequest := sendChatMessageRequest{
 		BroadcasterID: broadcasterID,
 		SenderID:      c.UserID,
 		Message:       message,
@@ -543,53 +394,35 @@ func (c *APIClient) SendChatMessage(broadcasterID, appAccessToken, message strin
 		return fmt.Errorf("failed to marshal chat message request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	respBody, statusCode, err := c.doAuthenticatedRequest(
+		"POST", url, bytes.NewBuffer(body), c.appTokenManager.get(),
+	)
 	if err != nil {
 		return err
 	}
 
-	req.Header.Add("Client-ID", c.ClientID)
-	req.Header.Add("Authorization", "Bearer "+appAccessToken)
-	req.Header.Add("Content-Type", "application/json")
-
-	resp, err := c.doRequestWithRetry(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to send chat message, status: %s, body: %s", resp.Status, string(respBody))
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("failed to send chat message, status: %d, body: %s",
+			statusCode, string(respBody),
+		)
 	}
 
 	return nil
 }
 
-// urlFetch makes a simple API call and returns the string returned
-func (c *APIClient) urlFetch(urlString string) (string, error) {
-	req, err := http.NewRequest("GET", urlString, nil)
-	if err != nil {
-		return "Error generating api request.", err
-	}
-
-	resp, err := c.doRequestWithRetry(req, 2)
+// UrlFetch makes a simple API call and returns the string returned
+func (c *APIClient) UrlFetch(url string) (string, error) {
+	body, statusCode, err := c.doAuthenticatedRequest("GET", url, nil, "")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
-		return "Requested page could not be found.", err
+	if statusCode == 404 {
+		return "", fmt.Errorf("requested page could not be found")
 	}
-	if resp.StatusCode != 200 {
-		return "Error processing your request.", err
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "Response formatted incorrectly.", err
+	if statusCode != 200 {
+		return "", fmt.Errorf("error processing request")
 	}
 
-	return string(body[:]), nil
+	return string(body), nil
 }
