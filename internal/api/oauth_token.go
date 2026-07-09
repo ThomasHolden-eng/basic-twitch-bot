@@ -1,4 +1,4 @@
-package twitch
+package api
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -21,24 +20,23 @@ const (
 	tokenURL    = "https://id.twitch.tv/oauth2/token" // The token URL
 )
 
-var oauthTokenManager *tokenManager = nil
-var oauthInitMutex sync.Mutex
-
-// initOAuthTokenManager handles the OAuth2 Authorization Code Flow.
-func initOAuthTokenManager(clientID, clientSecret string) error {
-	oauthInitMutex.Lock()
-	defer oauthInitMutex.Unlock()
-	if oauthTokenManager != nil {
-		return nil
-	}
-
-	tokenManagerChan := make(chan *tokenManager)
+// InitUserToken handles the OAuth2 Authorization Code Flow and returns a
+// TokenManager containing the user's access token. A background goroutine
+// refreshes the token before it expires.
+//
+// The flow opens the user's browser to the Twitch auth URL, runs a local
+// HTTP server on `port` to receive the callback, validates the state
+// parameter (CSRF protection), and exchanges the code for tokens. The
+// function blocks until the user completes the flow, an error occurs, or
+// the 2-minute timeout elapses.
+func InitUserToken(clientID, clientSecret string) (*TokenManager, error) {
+	tokenManagerChan := make(chan *TokenManager)
 	errChan := make(chan error)
 
 	// Generate a secure state for CSRF protection.
 	stateBytes := make([]byte, 32)
 	if _, err := rand.Read(stateBytes); err != nil {
-		return fmt.Errorf("failed to generate state: %w", err)
+		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
 	state := base64.URLEncoding.EncodeToString(stateBytes)
 
@@ -92,7 +90,7 @@ func initOAuthTokenManager(clientID, clientSecret string) error {
 
 	err := openBrowser(authURL)
 	if err != nil {
-		return fmt.Errorf("failed to open browser: %w", err)
+		return nil, fmt.Errorf("failed to open browser: %w", err)
 	}
 
 	defer func() {
@@ -104,17 +102,16 @@ func initOAuthTokenManager(clientID, clientSecret string) error {
 	// Wait for the token, an error, or a timeout.
 	select {
 	case tokenPtr := <-tokenManagerChan:
-		oauthTokenManager = tokenPtr
-		return nil
+		return tokenPtr, nil
 	case err := <-errChan:
-		return err
+		return nil, err
 	case <-time.After(2 * time.Minute):
-		return fmt.Errorf("authentication timed out")
+		return nil, fmt.Errorf("authentication timed out")
 	}
 }
 
 // exchangeCodeForToken exchanges the authorization code for an access token.
-func exchangeCodeForToken(clientID, clientSecret, code string) (*tokenManager, error) {
+func exchangeCodeForToken(clientID, clientSecret, code string) (*TokenManager, error) {
 	tokenResp, err := fetchToken(url.Values{
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
@@ -127,7 +124,7 @@ func exchangeCodeForToken(clientID, clientSecret, code string) (*tokenManager, e
 	}
 
 	log.Printf("The oauth token will expire in %d seconds", tokenResp.ExpiresIn)
-	tokenManager := &tokenManager{token: &tokenResp.AccessToken}
+	tokenManager := &TokenManager{token: &tokenResp.AccessToken}
 	go refreshTokenFlow(
 		clientID,
 		clientSecret,
@@ -141,7 +138,7 @@ func exchangeCodeForToken(clientID, clientSecret, code string) (*tokenManager, e
 
 // refreshTokenFlow handles the OAuth2 Refresh Token Flow.
 func refreshTokenFlow(clientID, clientSecret, refresh_token string,
-	oauth_tokenManager *tokenManager, expiry_d time.Duration) {
+	oauth_tokenManager *TokenManager, expiry_d time.Duration) {
 
 	refresh_timer := time.NewTicker(expiry_d - time.Minute)
 	var tokenResp *tokenResponse
@@ -173,7 +170,7 @@ func refreshTokenFlow(clientID, clientSecret, refresh_token string,
 
 		log.Printf("The new oauth token will expire in %d seconds", tokenResp.ExpiresIn)
 
-		oauth_tokenManager.set(tokenResp.AccessToken)
+		oauth_tokenManager.Set(tokenResp.AccessToken)
 		refresh_token = tokenResp.RefreshToken
 		refresh_timer.Reset(time.Duration(tokenResp.ExpiresIn)*time.Second - time.Minute)
 	}

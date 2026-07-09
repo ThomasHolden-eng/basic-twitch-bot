@@ -1,4 +1,7 @@
-package twitch
+// Package api contains the Twitch Helix API client and supporting
+// authentication (app access token, user OAuth, token refresh, rate
+// limiting). It does not know about IRC or chat messages.
+package api
 
 import (
 	"encoding/json"
@@ -9,21 +12,21 @@ import (
 	"sync"
 )
 
-// tokenManager holds the token
-type tokenManager struct {
+// TokenManager holds a thread-safe OAuth or app access token.
+type TokenManager struct {
 	token     *string    // Contains the raw token
 	tokenLock sync.Mutex // Manage concurrent access to the token
 }
 
-// get returns the token
-func (c *tokenManager) get() string {
+// Get returns the token.
+func (c *TokenManager) Get() string {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
 	return *c.token
 }
 
-// set sets the token
-func (c *tokenManager) set(s string) {
+// Set sets the token.
+func (c *TokenManager) Set(s string) {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
 	*c.token = s

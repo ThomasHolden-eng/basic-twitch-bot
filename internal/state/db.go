@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	TABLEFILE = "state.db" // Database file string
-	TABLE     = "state"    // Database table string
-	INTCOL    = "val_int"  // Database column string
-	STRCOL    = "val_str"  // Database column string
+	defaultDBPath = "state.db" // Default SQLite file path
+	TABLE         = "state"    // Database table string
+	INTCOL        = "val_int"  // Database column string
+	STRCOL        = "val_str"  // Database column string
 )
 
 // KVStorage represents a key-value database.
@@ -25,8 +25,14 @@ type KVStorage struct {
 }
 
 // NewKVStorage creates a new database connection.
-func NewKVStorage() (*KVStorage, error) {
-	dateSourceName := TABLEFILE + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+//
+// Pass an empty string to use the default file ("state.db"). Pass
+// ":memory:" for an in-memory database, useful in tests.
+func NewKVStorage(path string) (*KVStorage, error) {
+	if path == "" {
+		path = defaultDBPath
+	}
+	dateSourceName := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 
 	writeDB, err := sql.Open("sqlite", dateSourceName)
 	if err != nil {

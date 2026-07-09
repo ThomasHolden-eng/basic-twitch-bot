@@ -1,4 +1,9 @@
-package twitch
+// Package chat contains the Twitch IRC chat client.
+//
+// It opens a TLS connection to the Twitch IRC server, joins a single
+// channel, and forwards parsed PRIVMSG lines onto a Go channel for
+// downstream consumption (typically by a command dispatcher).
+package chat
 
 import (
 	"bufio"
@@ -8,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"twitchbotv2/internal/api"
 )
 
 const (
@@ -21,34 +27,46 @@ type User struct {
 	Badges map[string]string // Badge information
 }
 
+// Message is a chat message routed to the dispatcher.
 type Message struct {
 	User User   // User who sent the message
 	Text string // Message text
 }
 
-// TwitchClient handles the connection to Twitch IRC
+// TwitchClient handles the connection to Twitch IRC.
 type TwitchClient struct {
 	conn           net.Conn     // The connection to the Twitch IRC server
 	username       string       // The username of the bot
 	channel        string       // The channel to join
-	apiClient      *APIClient   // The Twitch API client
+	apiClient      *api.APIClient
+	userToken      *api.TokenManager
 	messageChannel chan Message // The channel for incoming messages
 	disconnect     chan bool    // The channel to signal disconnection
-
 }
 
-// NewTwitchClient creates a new Twitch client
-func NewTwitchClient(username, channel string, disconnect chan bool, messageChannel chan Message) *TwitchClient {
+// NewTwitchClient creates a new Twitch client.
+//
+// userToken must be the OAuth user token used to authenticate the IRC
+// connection (sent as PASS oauth:...). Pass nil to skip the IRC login
+// step (useful in tests that only exercise parseMessage).
+func NewTwitchClient(
+	username, channel string,
+	apiClient *api.APIClient,
+	userToken *api.TokenManager,
+	disconnect chan bool,
+	messageChannel chan Message,
+) *TwitchClient {
 	return &TwitchClient{
 		username:       sanitizeInput(username),
 		channel:        sanitizeInput(channel),
+		apiClient:      apiClient,
+		userToken:      userToken,
 		disconnect:     disconnect,
-		apiClient:      GetApiClient(),
 		messageChannel: messageChannel,
 	}
 }
 
-// Connect establishes a connection to the Twitch IRC server
+// Connect establishes a connection to the Twitch IRC server.
 func (c *TwitchClient) Connect() error {
 	config := &tls.Config{}
 	conn, err := tls.Dial("tcp", twitchIRCServer, config)
@@ -60,7 +78,10 @@ func (c *TwitchClient) Connect() error {
 	// Request IRCv3 tags, which include badge information
 	c.sendCommand("CAP REQ :twitch.tv/tags\r\n")
 
-	passCmd := fmt.Sprintf("PASS %s\r\n", ("oauth:" + oauthTokenManager.get()))
+	if c.userToken == nil {
+		return fmt.Errorf("chat: cannot connect without a user token")
+	}
+	passCmd := fmt.Sprintf("PASS %s\r\n", "oauth:"+c.userToken.Get())
 	nickCmd := fmt.Sprintf("NICK %s\r\n", c.username)
 	c.sendCommand(passCmd)
 	c.sendCommand(nickCmd)
@@ -68,11 +89,15 @@ func (c *TwitchClient) Connect() error {
 	joinCmd := fmt.Sprintf("JOIN %s\r\n", "#"+c.channel)
 	c.sendCommand(joinCmd)
 
-	broadcaster, err := c.apiClient.GetUserByLogin(c.channel)
-	if err != nil {
-		return err
+	if c.apiClient != nil {
+		broadcaster, err := c.apiClient.GetUserByLogin(c.channel)
+		if err != nil {
+			return err
+		}
+		go c.readMessages(broadcaster.Login)
+	} else {
+		go c.readMessages(c.channel)
 	}
-	go c.readMessages(broadcaster.Login)
 
 	go c.heartbeat()
 

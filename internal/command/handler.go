@@ -1,4 +1,9 @@
 // Package command contains command routing, handling, and dispatch.
+//
+// Wiring (constructing the chat client, the API client, the handler, and
+// connecting them) lives in the application's main package, not here.
+// This package only owns the registration surface, the per-user debounce,
+// and the dispatch loop.
 package command
 
 import (
@@ -6,23 +11,27 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"twitchbotv2/internal/twitch"
+
+	"twitchbotv2/internal/api"
+	"twitchbotv2/internal/chat"
 )
 
 // CommandFunc is the function signature for a command handler
-type CommandFunc func(user twitch.User, args []string) (string, error)
+type CommandFunc func(user chat.User, args []string) (string, error)
 
 // CommandHandler manages and executes commands
 type CommandHandler struct {
 	commands     map[string]CommandFunc
 	userMap      map[string]time.Time
-	apiClient    *twitch.APIClient
+	apiClient    *api.APIClient
 	userMapMutex sync.Mutex
 }
 
-// NewCommandHandler creates a new command handler
-func NewCommandHandler() *CommandHandler {
-	apiClient := twitch.GetApiClient()
+// NewCommandHandler creates a new command handler.
+//
+// apiClient is used to send responses back to chat. It may be nil in
+// tests; in that case responses are not sent (they are still computed).
+func NewCommandHandler(apiClient *api.APIClient) *CommandHandler {
 	return &CommandHandler{
 		commands:  make(map[string]CommandFunc),
 		userMap:   make(map[string]time.Time),
@@ -47,7 +56,14 @@ func (h *CommandHandler) RemoveRecentUsers() {
 	}
 }
 
-func (h *CommandHandler) handle(message twitch.Message) {
+// Handle processes a single incoming chat message.
+//
+// It applies a 1-second per-user debounce, parses the command name and
+// args, looks up the registered handler, and (if the handler returns a
+// non-empty string) sends the result back to chat via the API client.
+//
+// Exported so the application's main loop can drive it directly.
+func (h *CommandHandler) Handle(message chat.Message) {
 	h.RemoveRecentUsers()
 
 	user := message.User
@@ -78,7 +94,9 @@ func (h *CommandHandler) handle(message twitch.Message) {
 		return
 	}
 
-	if out != "" {
-		h.apiClient.SendChatMessage(user.ID, out)
+	if out != "" && h.apiClient != nil {
+		if err := h.apiClient.SendChatMessage(user.ID, out); err != nil {
+			log.Printf("send chat message: %v", err)
+		}
 	}
 }
