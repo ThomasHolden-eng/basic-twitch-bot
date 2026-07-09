@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,15 +21,24 @@ const (
 	tokenURL    = "https://id.twitch.tv/oauth2/token" // The token URL
 )
 
-// getToken handles the OAuth2 Authorization Code Flow.
-func getOAuthTokenManager(clientID, clientSecret string) (*tokenManager, error) {
+var oauthTokenManager *tokenManager = nil
+var oauthInitMutex sync.Mutex
+
+// initOAuthTokenManager handles the OAuth2 Authorization Code Flow.
+func initOAuthTokenManager(clientID, clientSecret string) error {
+	oauthInitMutex.Lock()
+	defer oauthInitMutex.Unlock()
+	if oauthTokenManager != nil {
+		return nil
+	}
+
 	tokenManagerChan := make(chan *tokenManager)
 	errChan := make(chan error)
 
 	// Generate a secure state for CSRF protection.
 	stateBytes := make([]byte, 32)
 	if _, err := rand.Read(stateBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate state: %w", err)
+		return fmt.Errorf("failed to generate state: %w", err)
 	}
 	state := base64.URLEncoding.EncodeToString(stateBytes)
 
@@ -82,7 +92,7 @@ func getOAuthTokenManager(clientID, clientSecret string) (*tokenManager, error) 
 
 	err := openBrowser(authURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open browser: %w", err)
+		return fmt.Errorf("failed to open browser: %w", err)
 	}
 
 	defer func() {
@@ -94,11 +104,12 @@ func getOAuthTokenManager(clientID, clientSecret string) (*tokenManager, error) 
 	// Wait for the token, an error, or a timeout.
 	select {
 	case tokenPtr := <-tokenManagerChan:
-		return tokenPtr, nil
+		oauthTokenManager = tokenPtr
+		return nil
 	case err := <-errChan:
-		return nil, err
+		return err
 	case <-time.After(2 * time.Minute):
-		return nil, fmt.Errorf("authentication timed out")
+		return fmt.Errorf("authentication timed out")
 	}
 }
 

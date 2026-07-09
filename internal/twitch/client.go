@@ -23,19 +23,20 @@ const (
 
 // APIClient holds the necessary information to communicate with the Twitch API
 type APIClient struct {
-	UserID            string
-	clientID          string
-	oauthTokenManager *tokenManager
-	appTokenManager   *tokenManager
-	rateLimit         *tokenBucket
-	httpClient        *http.Client
-	tempClip          *clipStore
-	clipLock          sync.Mutex
+	UserID          string
+	clientID        string
+	appTokenManager *tokenManager
+	rateLimit       *tokenBucket
+	httpClient      *http.Client
+	tempClip        *clipStore
+	clipLock        sync.Mutex
 }
+
+var apiClient *APIClient = nil
 
 // NewAPIClient creates a new client for the Twitch API
 func NewAPIClient(username, clientID, clientSecret string) *APIClient {
-	oAuthTokenManager, err := getOAuthTokenManager(clientID, clientSecret)
+	err := initOAuthTokenManager(clientID, clientSecret)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,15 +47,23 @@ func NewAPIClient(username, clientID, clientSecret string) *APIClient {
 	}
 
 	client := &APIClient{
-		clientID:          clientID,
-		oauthTokenManager: oAuthTokenManager,
-		appTokenManager:   appAccessToken,
-		rateLimit:         &tokenBucket{},
-		httpClient:        &http.Client{},
+		clientID:        clientID,
+		appTokenManager: appAccessToken,
+		rateLimit:       &tokenBucket{},
+		httpClient:      &http.Client{},
 	}
 	client.setUserID(username)
 	go client.rateLimit.startTokenTimer()
+
+	apiClient = client
 	return client
+}
+
+func GetApiClient() *APIClient {
+	if apiClient == nil {
+		return nil
+	}
+	return apiClient
 }
 
 // twitchUser represents a user object from the Twitch API
@@ -198,7 +207,7 @@ func (c *APIClient) GetUserByLogin(login string) (*twitchUser, error) {
 	login = url.QueryEscape(login)
 
 	url := fmt.Sprintf("%s/users?login=%s", helixBaseURL, login)
-	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, oauthTokenManager.get())
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +230,7 @@ func (c *APIClient) GetFollowSince(broadcasterID, userID string) (*follower, err
 	userID = url.QueryEscape(userID)
 
 	url := fmt.Sprintf("%s/channels/followers?broadcaster_id=%s&user_id=%s", helixBaseURL, broadcasterID, userID)
-	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, oauthTokenManager.get())
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +252,7 @@ func (c *APIClient) GetFollowerNumber(broadcasterID string) (int, error) {
 	broadcasterID = url.QueryEscape(broadcasterID)
 
 	url := fmt.Sprintf("%s/channels/followers?broadcaster_id=%s", helixBaseURL, broadcasterID)
-	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, oauthTokenManager.get())
 	if err != nil {
 		return 0, err
 	}
@@ -276,7 +285,7 @@ func (c *APIClient) GetStream(broadcasterLogin string) (*stream, error) {
 	broadcasterLogin = url.QueryEscape(broadcasterLogin)
 
 	url := fmt.Sprintf("%s/streams?user_login=%s", helixBaseURL, broadcasterLogin)
-	body, _, err := c.doAuthenticatedRequest("GET", url, nil, c.oauthTokenManager.get())
+	body, _, err := c.doAuthenticatedRequest("GET", url, nil, oauthTokenManager.get())
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +347,7 @@ func (c *APIClient) CreateClip(broadcasterID string) (string, error) {
 	broadcasterID = url.QueryEscape(broadcasterID)
 
 	url := fmt.Sprintf("https://api.twitch.tv/helix/clips?broadcaster_id=%s", broadcasterID)
-	body, _, err := c.doAuthenticatedRequest("POST", url, nil, c.oauthTokenManager.get())
+	body, _, err := c.doAuthenticatedRequest("POST", url, nil, oauthTokenManager.get())
 	if err != nil {
 		return "", err
 	}
