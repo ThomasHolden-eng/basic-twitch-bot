@@ -63,8 +63,8 @@ func NewAPIClient(username, clientID, clientSecret string) (*APIClient, *TokenMa
 	return client, userToken, nil
 }
 
-// twitchUser represents a user object from the Twitch API
-type twitchUser struct {
+// TwitchUser represents a user object from the Twitch API
+type TwitchUser struct {
 	ID    string `json:"id"`
 	Login string `json:"login"`
 }
@@ -115,7 +115,7 @@ type streamResponse struct {
 
 // userResponse is the top-level structure of the get users API response
 type userResponse struct {
-	Data []twitchUser `json:"data"`
+	Data []TwitchUser `json:"data"`
 }
 
 // clipResponse is the top-level structure of the create clip API response
@@ -200,7 +200,7 @@ func (c *APIClient) setUserID(login string) error {
 }
 
 // GetUserByLogin fetches user information by their login name
-func (c *APIClient) GetUserByLogin(login string) (*twitchUser, error) {
+func (c *APIClient) GetUserByLogin(login string) (*TwitchUser, error) {
 	login = url.QueryEscape(login)
 
 	url := fmt.Sprintf("%s/users?login=%s", helixBaseURL, login)

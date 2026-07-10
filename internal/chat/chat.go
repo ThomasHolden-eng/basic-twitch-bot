@@ -35,13 +35,13 @@ type Message struct {
 
 // TwitchClient handles the connection to Twitch IRC.
 type TwitchClient struct {
-	conn           net.Conn     // The connection to the Twitch IRC server
-	username       string       // The username of the bot
-	channel        string       // The channel to join
-	apiClient      *api.APIClient
-	userToken      *api.TokenManager
-	messageChannel chan Message // The channel for incoming messages
-	disconnect     chan bool    // The channel to signal disconnection
+	conn           net.Conn          // The connection to the Twitch IRC server
+	username       string            // The username of the bot
+	channel        string            // The channel to join
+	apiClient      *api.APIClient    //
+	userToken      *api.TokenManager //
+	messageChannel chan Message      // The channel for incoming messages
+	disconnect     chan bool         // The channel to signal disconnection
 }
 
 // NewTwitchClient creates a new Twitch client.

@@ -7,6 +7,7 @@
 package command
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -14,29 +15,67 @@ import (
 
 	"twitchbotv2/internal/api"
 	"twitchbotv2/internal/chat"
+	"twitchbotv2/internal/state"
 )
 
 // CommandFunc is the function signature for a command handler
-type CommandFunc func(user chat.User, args []string) (string, error)
+type CommandFunc func(h *CommandHandler, user chat.User, args []string) (string, error)
 
 // CommandHandler manages and executes commands
 type CommandHandler struct {
-	commands     map[string]CommandFunc
-	userMap      map[string]time.Time
+	commands map[string]CommandFunc
+	userMap  map[string]time.Time
+
+	broadcaster *api.TwitchUser
+
+	database     *state.KVStorage
+	config       *state.SafeConfig
 	apiClient    *api.APIClient
 	userMapMutex sync.Mutex
 }
 
 // NewCommandHandler creates a new command handler.
 //
+// It opens the SQLite state store, loads the safe config, and resolves
+// the broadcaster (channel owner) so commands that need it don't have
+// to. Any of these failing returns an error rather than nil, so the
+// caller can fail loudly at startup instead of crashing on the first
+// command.
+//
 // apiClient is used to send responses back to chat. It may be nil in
 // tests; in that case responses are not sent (they are still computed).
-func NewCommandHandler(apiClient *api.APIClient) *CommandHandler {
-	return &CommandHandler{
-		commands:  make(map[string]CommandFunc),
-		userMap:   make(map[string]time.Time),
-		apiClient: apiClient,
+func NewCommandHandler(
+	apiClient *api.APIClient,
+	stateDBPath string,
+) (*CommandHandler, error) {
+	store, err := state.NewKVStorage(stateDBPath)
+	if err != nil {
+		return nil, fmt.Errorf("open state store: %w", err)
 	}
+
+	cfg, err := state.LoadSafeConfig()
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	var broadcaster *api.TwitchUser
+	if apiClient != nil {
+		broadcaster, err = apiClient.GetUserByLogin(cfg.Channel)
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("resolve broadcaster %q: %w", cfg.Channel, err)
+		}
+	}
+
+	return &CommandHandler{
+		commands:    make(map[string]CommandFunc),
+		userMap:     make(map[string]time.Time),
+		broadcaster: broadcaster,
+		database:    store,
+		config:      cfg,
+		apiClient:   apiClient,
+	}, nil
 }
 
 // Register adds a new command to the handler
@@ -88,15 +127,43 @@ func (h *CommandHandler) Handle(message chat.Message) {
 	h.userMap[user.Name] = time.Now()
 	h.userMapMutex.Unlock()
 
-	out, err := cmd(user, args)
+	out, err := cmd(h, user, args)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	if out != "" && h.apiClient != nil {
-		if err := h.apiClient.SendChatMessage(user.ID, out); err != nil {
-			log.Printf("send chat message: %v", err)
-		}
+	if out == "" || h.apiClient == nil {
+		return
 	}
+	if h.broadcaster == nil {
+		log.Printf("cannot send chat message: broadcaster not resolved")
+		return
+	}
+	// Helix /chat/messages requires the channel owner's user ID as
+	// broadcaster_id, not the sender's. The API client fills in the
+	// bot's own UserID as sender_id internally.
+	if err := h.apiClient.SendChatMessage(h.broadcaster.ID, out); err != nil {
+		log.Printf("send chat message: %v", err)
+	}
+}
+
+// ChannelName returns the broadcaster's login name, or empty if it has
+// not been resolved yet. Command bodies should call this rather than
+// reading h.broadcaster.Login directly so that nil-safety is uniform.
+func (h *CommandHandler) ChannelName() string {
+	if h.broadcaster == nil {
+		return ""
+	}
+	return h.broadcaster.Login
+}
+
+// Nickname returns the configured streamer nickname, falling back to the
+// broadcaster login when the nickname is empty. Commands use this in
+// user-facing strings.
+func (h *CommandHandler) Nickname() string {
+	if h.config != nil && h.config.Nickname != "" {
+		return h.config.Nickname
+	}
+	return h.ChannelName()
 }
