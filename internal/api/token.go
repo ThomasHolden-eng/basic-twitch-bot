@@ -22,6 +22,9 @@ type TokenManager struct {
 func (c *TokenManager) Get() string {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
+	if c.token == nil {
+		return ""
+	}
 	return *c.token
 }
 
@@ -29,6 +32,9 @@ func (c *TokenManager) Get() string {
 func (c *TokenManager) Set(s string) {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
+	if c.token == nil {
+		c.token = new(string)
+	}
 	*c.token = s
 }
 

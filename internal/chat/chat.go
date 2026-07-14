@@ -145,11 +145,15 @@ func (c *TwitchClient) readMessages(channelName string) {
 			return
 		}
 
-		c.conn.SetReadDeadline(time.Now().Add(time.Second * 45))
+		c.conn.SetReadDeadline(time.Now().Add(time.Second * 60))
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			log.Printf("Error reading from line: %v", err)
-			close(c.disconnect)
+			select {
+			case <-c.disconnect:
+			default:
+				close(c.disconnect)
+			}
 			return
 		}
 		line = strings.TrimSpace(line)

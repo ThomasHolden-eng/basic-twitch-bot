@@ -11,9 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
+	"time"
 
 	"twitchbotv2/internal/api"
 	"twitchbotv2/internal/chat"
@@ -21,13 +19,26 @@ import (
 	"twitchbotv2/internal/state"
 )
 
+var backoffTime = 500 * time.Millisecond
+
 func main() {
-	if err := run(); err != nil {
-		log.Fatalf("fatal: %v", err)
+	reset := false
+
+	for {
+		if err := run(reset); err != nil {
+			log.Printf("fatal: %v; retrying", err)
+			reset = true
+		}
 	}
 }
 
-func run() error {
+func run(backoff bool) error {
+	if backoff {
+		log.Printf("Waiting %v milliseconds before retry", backoffTime)
+		time.Sleep(backoffTime)
+		backoffTime *= 2
+		backoffTime = min(backoffTime, 32*time.Second)
+	}
 	cfg, err := state.LoadOrCreateConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -57,28 +68,29 @@ func run() error {
 	}
 	defer twitchClient.Close()
 
-	handler, err := command.NewCommandHandler(apiClient, "state.db")
+	store, err := state.NewKVStorage("state.db")
+	if err != nil {
+		return fmt.Errorf("open state store: %w", err)
+	}
+	defer store.Close()
+	handler, err := command.NewCommandHandler(apiClient, store)
 	if err != nil {
 		return fmt.Errorf("command handler: %w", err)
 	}
 	command.RegisterCommands(handler)
 
-	// Watch for SIGINT/SIGTERM and close the disconnect channel.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		log.Printf("received signal %s, shutting down", sig)
-		close(disconnect)
-	}()
+	timedRunner := command.NewCommandWheel(time.Minute*10, handler, disconnect,
+		"donate", "follow", "socials", "today")
+	go timedRunner.StartTimedCommands()
 
 	log.Printf("bot is running, dispatching chat messages")
+	backoffTime = 500 * time.Millisecond
 	for {
 		select {
 		case msg := <-messageCh:
 			handler.Handle(msg)
 		case <-disconnect:
-			return nil
+			return fmt.Errorf("client unexpectedly disconnected")
 		}
 	}
 }

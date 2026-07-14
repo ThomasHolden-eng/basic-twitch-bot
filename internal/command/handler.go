@@ -46,16 +46,10 @@ type CommandHandler struct {
 // tests; in that case responses are not sent (they are still computed).
 func NewCommandHandler(
 	apiClient *api.APIClient,
-	stateDBPath string,
+	database *state.KVStorage,
 ) (*CommandHandler, error) {
-	store, err := state.NewKVStorage(stateDBPath)
-	if err != nil {
-		return nil, fmt.Errorf("open state store: %w", err)
-	}
-
 	cfg, err := state.LoadSafeConfig()
 	if err != nil {
-		store.Close()
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
@@ -63,7 +57,6 @@ func NewCommandHandler(
 	if apiClient != nil {
 		broadcaster, err = apiClient.GetUserByLogin(cfg.Channel)
 		if err != nil {
-			store.Close()
 			return nil, fmt.Errorf("resolve broadcaster %q: %w", cfg.Channel, err)
 		}
 	}
@@ -72,7 +65,7 @@ func NewCommandHandler(
 		commands:    make(map[string]CommandFunc),
 		userMap:     make(map[string]time.Time),
 		broadcaster: broadcaster,
-		database:    store,
+		database:    database,
 		config:      cfg,
 		apiClient:   apiClient,
 	}, nil
@@ -107,6 +100,7 @@ func (h *CommandHandler) Handle(message chat.Message) {
 
 	user := message.User
 	content := message.Text
+	messagesSent++
 
 	_, ok := h.userMap[user.Name]
 	if !strings.HasPrefix(content, "!") || ok {
@@ -127,6 +121,10 @@ func (h *CommandHandler) Handle(message chat.Message) {
 	h.userMap[user.Name] = time.Now()
 	h.userMapMutex.Unlock()
 
+	h.handleSend(cmd, user, args)
+}
+
+func (h *CommandHandler) handleSend(cmd CommandFunc, user chat.User, args []string) {
 	out, err := cmd(h, user, args)
 	if err != nil {
 		log.Println(err)
