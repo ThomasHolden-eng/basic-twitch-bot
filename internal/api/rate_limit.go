@@ -6,10 +6,20 @@ import (
 	"time"
 )
 
+var tokenBucketSingleton *tokenBucket = nil
+
 // tokenBucket is a simple rate limiting manager for the twitch API
 type tokenBucket struct {
 	tokensLeft int
 	mutex      sync.Mutex
+}
+
+func newTokenBucket() *tokenBucket {
+	if tokenBucketSingleton == nil {
+		tokenBucketSingleton = new(tokenBucket)
+	}
+
+	return tokenBucketSingleton
 }
 
 // takeToken returns an error if the bucket is empty, removes a token otherwise

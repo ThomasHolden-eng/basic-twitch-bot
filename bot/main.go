@@ -16,6 +16,7 @@ import (
 	"twitchbotv2/internal/api"
 	"twitchbotv2/internal/chat"
 	"twitchbotv2/internal/command"
+	"twitchbotv2/internal/eventsub"
 	"twitchbotv2/internal/state"
 )
 
@@ -47,12 +48,26 @@ func run(backoff bool) error {
 		return errors.New("config.json is missing required fields (username, client_id, client_secret, channel)")
 	}
 
-	apiClient, userToken, err := api.NewAPIClient(cfg.Username, cfg.ClientID, cfg.ClientSecret)
+	disconnect := make(chan bool)
+
+	userToken, err := api.InitUserToken(cfg.ClientID, cfg.ClientSecret,
+		"chat:read+chat:edit+user:write:chat+user:bot+channel:manage:broadcast+"+
+			"moderator:read:followers+moderator:read:chatters+clips:edit",
+		disconnect,
+	)
+	if err != nil {
+		return fmt.Errorf("user OAuth: %w", err)
+	}
+	appToken, err := api.GetAppAccessTokenManager(cfg.ClientID, cfg.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("app access token: %w", err)
+	}
+
+	apiClient, err := api.NewAPIClient(cfg.Username, cfg.ClientID, userToken, appToken)
 	if err != nil {
 		return fmt.Errorf("api client: %w", err)
 	}
 
-	disconnect := make(chan bool)
 	messageCh := make(chan chat.Message)
 
 	twitchClient := chat.NewTwitchClient(
@@ -67,6 +82,20 @@ func run(backoff bool) error {
 		return fmt.Errorf("connect to twitch: %w", err)
 	}
 	defer twitchClient.Close()
+
+	broadcasterToken, err := api.InitUserToken(cfg.BroadcasterID, cfg.BroadcasterSecret,
+		"channel:read:redemptions", disconnect)
+	eventCh := make(chan eventsub.RedemptionEvent)
+	eventClient := eventsub.NewEventSubClient(
+		cfg.BroadcasterID,
+		cfg.Channel,
+		apiClient,
+		broadcasterToken,
+		disconnect,
+		eventCh,
+	)
+	eventClient.Connect()
+	defer eventClient.Close()
 
 	store, err := state.NewKVStorage("state.db")
 	if err != nil {
@@ -89,6 +118,8 @@ func run(backoff bool) error {
 		select {
 		case msg := <-messageCh:
 			handler.Handle(msg)
+		case event := <-eventCh:
+			handler.HandleRedeem(event)
 		case <-disconnect:
 			return fmt.Errorf("client unexpectedly disconnected")
 		}

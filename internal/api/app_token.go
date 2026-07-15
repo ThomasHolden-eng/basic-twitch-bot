@@ -3,7 +3,7 @@ package api
 import "net/url"
 
 // GetAppAccessToken retrieves an app access token using the client credentials flow.
-func getAppAccessTokenManager(clientID, clientSecret string) (*TokenManager, error) {
+func GetAppAccessTokenManager(clientID, clientSecret string) (*TokenManager, error) {
 	tokenResp, err := fetchToken(url.Values{
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},

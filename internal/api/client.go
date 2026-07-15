@@ -37,30 +37,20 @@ type APIClient struct {
 // token bucket. It returns the constructed client together with the user
 // token so the caller can attach it to other components (e.g. the IRC
 // client, which needs the user token for its PASS command).
-func NewAPIClient(username, clientID, clientSecret string) (*APIClient, *TokenManager, error) {
-	userToken, err := InitUserToken(clientID, clientSecret)
-	if err != nil {
-		return nil, nil, fmt.Errorf("user OAuth: %w", err)
-	}
-
-	appToken, err := getAppAccessTokenManager(clientID, clientSecret)
-	if err != nil {
-		return nil, nil, fmt.Errorf("app access token: %w", err)
-	}
-
+func NewAPIClient(username, clientID string, userToken, appToken *TokenManager) (*APIClient, error) {
 	client := &APIClient{
 		clientID:        clientID,
 		appTokenManager: appToken,
 		userToken:       userToken,
-		rateLimit:       &tokenBucket{},
+		rateLimit:       newTokenBucket(),
 		httpClient:      &http.Client{},
 	}
 	if err := client.setUserID(username); err != nil {
-		return nil, nil, fmt.Errorf("resolve bot user id: %w", err)
+		return nil, fmt.Errorf("resolve bot user id: %w", err)
 	}
 	go client.rateLimit.startTokenTimer()
 
-	return client, userToken, nil
+	return client, nil
 }
 
 // TwitchUser represents a user object from the Twitch API

@@ -9,21 +9,23 @@ import (
 
 // Config mirrors the fields documented in the README.
 type Config struct {
-	Username      string `json:"username"`
-	ClientID      string `json:"client_id"`
-	ClientSecret  string `json:"client_secret"`
-	Channel       string `json:"channel"`
-	FyrewireKey   string `json:"fyrewire_key,omitempty"`
-	ValUser       string `json:"val_user,omitempty"`
-	ValTag        string `json:"val_tag,omitempty"`
-	ValRegion     string `json:"val_region,omitempty"`
-	DiscordLink   string `json:"discord_link,omitempty"`
-	TikTokLink    string `json:"tiktok_link,omitempty"`
-	InstagramLink string `json:"instagram_link,omitempty"`
-	TwitterLink   string `json:"twitter_link,omitempty"`
-	YouTubeLink   string `json:"youtube_link,omitempty"`
-	DonateLink    string `json:"donate_link,omitempty"`
-	Nickname      string `json:"nickname,omitempty"`
+	Username          string `json:"username"`
+	ClientID          string `json:"client_id"`
+	ClientSecret      string `json:"client_secret"`
+	BroadcasterID     string `json:"broadcaster_id"`
+	BroadcasterSecret string `json:"broadcaster_secret"`
+	Channel           string `json:"channel"`
+	FyrewireKey       string `json:"fyrewire_key,omitempty"`
+	ValUser           string `json:"val_user,omitempty"`
+	ValTag            string `json:"val_tag,omitempty"`
+	ValRegion         string `json:"val_region,omitempty"`
+	DiscordLink       string `json:"discord_link,omitempty"`
+	TikTokLink        string `json:"tiktok_link,omitempty"`
+	InstagramLink     string `json:"instagram_link,omitempty"`
+	TwitterLink       string `json:"twitter_link,omitempty"`
+	YouTubeLink       string `json:"youtube_link,omitempty"`
+	DonateLink        string `json:"donate_link,omitempty"`
+	Nickname          string `json:"nickname,omitempty"`
 }
 
 // SafeConfig is Config without fields that should not be exposed
@@ -50,6 +52,8 @@ const placeholderConfig = `{
   "username": "my_bot_account_name",
   "client_id": "ab1cdef23ghijk45lmnopq67rstu",
   "client_secret": "abc1d2efg45hijk67lmnopqrstuvwx",
+  "broadcaster_id": "ab1cdef23ghijk45lmnopq67rstu",
+  "broadcaster_secret": "ab1cdef23ghijk45lmnopq67rstu",
   "channel": "the_streamer_channel_name",
   "fyrewire_key": "",
   "val_user": "",

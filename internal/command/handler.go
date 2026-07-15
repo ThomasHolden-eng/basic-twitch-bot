@@ -15,6 +15,7 @@ import (
 
 	"twitchbotv2/internal/api"
 	"twitchbotv2/internal/chat"
+	"twitchbotv2/internal/eventsub"
 	"twitchbotv2/internal/state"
 )
 
@@ -164,4 +165,28 @@ func (h *CommandHandler) Nickname() string {
 		return h.config.Nickname
 	}
 	return h.ChannelName()
+}
+
+// Handle processes a single incoming chat message.
+//
+// It applies a 1-second per-user debounce, parses the command name and
+// args, looks up the registered handler, and (if the handler returns a
+// non-empty string) sends the result back to chat via the API client.
+//
+// Exported so the application's main loop can drive it directly.
+func (h *CommandHandler) HandleRedeem(event eventsub.RedemptionEvent) {
+	h.RemoveRecentUsers()
+
+	user := chat.User{ID: event.UserID, Name: event.UserName, Badges: make(map[string]string)}
+	redeemName := event.RewardTitle
+
+	log.Printf("%v", redeemName)
+
+	cmd, found := h.commands[redeemName]
+	if !found {
+		return
+	}
+	log.Printf("redeem command, '%s' found", redeemName)
+
+	h.handleSend(cmd, user, []string{})
 }
