@@ -10,7 +10,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"twitchbotv2/internal/api"
@@ -24,11 +28,18 @@ var backoffTime = 500 * time.Millisecond
 
 func main() {
 	reset := false
+	logFileClose, err := setupLogging()
+	defer logFileClose()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	for {
 		if err := run(reset); err != nil {
 			log.Printf("fatal: %v; retrying", err)
 			reset = true
+		} else {
+			return
 		}
 	}
 }
@@ -85,6 +96,9 @@ func run(backoff bool) error {
 
 	broadcasterToken, err := api.InitUserToken(cfg.BroadcasterID, cfg.BroadcasterSecret,
 		"channel:read:redemptions", disconnect)
+	if err != nil {
+		return fmt.Errorf("broadcaster OAuth: %w", err)
+	}
 	eventCh := make(chan eventsub.RedemptionEvent)
 	eventClient := eventsub.NewEventSubClient(
 		cfg.BroadcasterID,
@@ -112,6 +126,10 @@ func run(backoff bool) error {
 		"donate", "follow", "socials", "today")
 	go timedRunner.StartTimedCommands()
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
 	log.Printf("bot is running, dispatching chat messages")
 	backoffTime = 500 * time.Millisecond
 	for {
@@ -122,6 +140,25 @@ func run(backoff bool) error {
 			handler.HandleRedeem(event)
 		case <-disconnect:
 			return fmt.Errorf("client unexpectedly disconnected")
+		case sig := <-sigCh:
+			log.Printf("received %v, shutting down", sig)
+			return nil
 		}
 	}
+}
+
+func setupLogging() (func(), error) {
+	if err := os.Rename("log.txt", "old_log.txt"); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("rotate log file: %w", err)
+	}
+
+	logFile, err := os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	return func() { logFile.Close() }, nil
 }
