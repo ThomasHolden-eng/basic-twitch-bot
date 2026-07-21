@@ -68,8 +68,10 @@ func NewTwitchClient(
 
 // Connect establishes a connection to the Twitch IRC server.
 func (c *TwitchClient) Connect() error {
-	config := &tls.Config{}
-	conn, err := tls.Dial("tcp", twitchIRCServer, config)
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 10 * time.Second},
+		"tcp", twitchIRCServer, &tls.Config{},
+	)
 	if err != nil {
 		return err
 	}
@@ -113,6 +115,10 @@ func (c *TwitchClient) Close() {
 
 // sendCommand sends a raw command to the IRC server
 func (c *TwitchClient) sendCommand(command string) {
+	if c.conn == nil {
+		return
+	}
+	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err := fmt.Fprint(c.conn, command)
 	if err != nil {
 		log.Printf("Error sending command, '%s', to the IRC server: %v", command, err)
@@ -140,20 +146,15 @@ func (c *TwitchClient) readMessages(channelName string) {
 	for {
 		if c.conn == nil {
 			log.Println("Connection is not initialised.")
-			close(c.disconnect)
-			c.Close()
+			c.triggerDisconnect()
 			return
 		}
 
-		c.conn.SetReadDeadline(time.Now().Add(time.Second * 60))
+		c.conn.SetReadDeadline(time.Now().Add(time.Second * 50))
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			log.Printf("Error reading from line: %v", err)
-			select {
-			case <-c.disconnect:
-			default:
-				close(c.disconnect)
-			}
+			c.triggerDisconnect()
 			return
 		}
 		line = strings.TrimSpace(line)
@@ -167,10 +168,34 @@ func (c *TwitchClient) readMessages(channelName string) {
 		if strings.Contains(line, "PRIVMSG") {
 			user, message, channel := parseMessage(line)
 			if channelName == channel {
-				c.messageChannel <- Message{User: user, Text: message}
+				select {
+				case c.messageChannel <- Message{User: user, Text: message}:
+				case <-c.disconnect:
+					log.Printf("disconnecting: clean exit")
+					c.triggerDisconnect()
+					return
+				}
 			}
 		}
 	}
+}
+
+func (c *TwitchClient) triggerDisconnect() {
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Recovered from race in TwitchClient")
+			}
+		}()
+
+		select {
+		case <-c.disconnect:
+		default:
+			close(c.disconnect)
+		}
+	}()
+
+	c.Close()
 }
 
 // parseMessage extracts user info and the message from a raw IRC line

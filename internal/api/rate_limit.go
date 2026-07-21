@@ -16,7 +16,8 @@ type tokenBucket struct {
 
 func newTokenBucket() *tokenBucket {
 	if tokenBucketSingleton == nil {
-		tokenBucketSingleton = new(tokenBucket)
+		tokenBucketSingleton = &tokenBucket{tokensLeft: 50}
+		go tokenBucketSingleton.startTokenTimer()
 	}
 
 	return tokenBucketSingleton
@@ -38,13 +39,9 @@ func (t *tokenBucket) takeToken() error {
 // This is the direct implementation for rate limiting the chatbot (100
 // messages/30s). See https://dev.twitch.tv/docs/chat/#twitch-chat-rate-limits
 func (t *tokenBucket) startTokenTimer() {
-	t.mutex.Lock()
-	t.tokensLeft = 50
-	t.mutex.Unlock()
 	timer1 := time.NewTicker(time.Millisecond * 600)
 
-	for {
-		<-timer1.C
+	for range timer1.C {
 		t.mutex.Lock()
 		if t.tokensLeft < 50 {
 			t.tokensLeft++

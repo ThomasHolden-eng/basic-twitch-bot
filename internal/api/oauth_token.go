@@ -57,8 +57,8 @@ func InitUserToken(clientID, clientSecret, permissions string, disconnect chan b
 		}
 	}
 
-	tokenManagerChan := make(chan *TokenManager)
-	errChan := make(chan error)
+	tokenManagerChan := make(chan *TokenManager, 1)
+	errChan := make(chan error, 1)
 
 	// Generate a secure state for CSRF protection.
 	stateBytes := make([]byte, 32)
@@ -176,17 +176,18 @@ func refreshTokenFlow(clientID, clientSecret, refresh_token string,
 
 	refreshFile.SetRefreshToken(clientID, refresh_token)
 
-	for range refresh_timer.C {
+	for {
 		select {
 		case <-disconnect:
 			return
-		default:
+		case <-refresh_timer.C:
+			// proceed with execution
 		}
 
-		maxRetries := 20
+		maxTime := time.Now().Add(time.Second * 300)
 		baseDelay := 500 * time.Millisecond
 
-		for i := 0; i < maxRetries; i++ {
+		for time.Now().Before(maxTime) {
 			tokenResp, err = fetchToken(url.Values{
 				"client_id":     {clientID},
 				"client_secret": {clientSecret},

@@ -53,7 +53,8 @@ func run(backoff bool) error {
 	}
 	cfg, err := state.LoadOrCreateConfig()
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		log.Printf("load config: %v", err)
+		return nil
 	}
 	if cfg.Username == "" || cfg.ClientID == "" || cfg.ClientSecret == "" || cfg.Channel == "" {
 		return errors.New("config.json is missing required fields (username, client_id, client_secret, channel)")
@@ -79,8 +80,7 @@ func run(backoff bool) error {
 		return fmt.Errorf("api client: %w", err)
 	}
 
-	messageCh := make(chan chat.Message)
-
+	messageCh := make(chan chat.Message, 100)
 	twitchClient := chat.NewTwitchClient(
 		cfg.Username,
 		cfg.Channel,
@@ -92,14 +92,18 @@ func run(backoff bool) error {
 	if err := twitchClient.Connect(); err != nil {
 		return fmt.Errorf("connect to twitch: %w", err)
 	}
-	defer twitchClient.Close()
+	defer runWithTimeout(
+		"twitchClient.Close()",
+		twitchClient.Close,
+		time.Second*5,
+	)
 
 	broadcasterToken, err := api.InitUserToken(cfg.BroadcasterID, cfg.BroadcasterSecret,
 		"channel:read:redemptions", disconnect)
 	if err != nil {
 		return fmt.Errorf("broadcaster OAuth: %w", err)
 	}
-	eventCh := make(chan eventsub.RedemptionEvent)
+	eventCh := make(chan eventsub.RedemptionEvent, 20)
 	eventClient := eventsub.NewEventSubClient(
 		cfg.BroadcasterID,
 		cfg.Channel,
@@ -109,7 +113,11 @@ func run(backoff bool) error {
 		eventCh,
 	)
 	eventClient.Connect()
-	defer eventClient.Close()
+	defer runWithTimeout(
+		"eventClient.Close()",
+		eventClient.Close,
+		time.Second*5,
+	)
 
 	store, err := state.NewKVStorage("state.db")
 	if err != nil {
@@ -135,9 +143,9 @@ func run(backoff bool) error {
 	for {
 		select {
 		case msg := <-messageCh:
-			handler.Handle(msg)
+			go handler.Handle(msg)
 		case event := <-eventCh:
-			handler.HandleRedeem(event)
+			go handler.HandleRedeem(event)
 		case <-disconnect:
 			return fmt.Errorf("client unexpectedly disconnected")
 		case sig := <-sigCh:
@@ -161,4 +169,21 @@ func setupLogging() (func(), error) {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	return func() { logFile.Close() }, nil
+}
+
+// runWithTimeout runs closeFn in a goroutine and waits up to timeout for
+// it to finish. If it doesn't finish in time, runWithTimeout returns
+// anyway and logs a warning. This aims to ensure a goroutine cannot
+// block shutdown. Intended for use with defer.
+func runWithTimeout(name string, closeFn func(), timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		closeFn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Printf("%s: close did not finish within %v, abandoning", name, timeout)
+	}
 }
