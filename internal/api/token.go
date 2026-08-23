@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 )
 
 // TokenManager holds a thread-safe OAuth or app access token.
@@ -40,7 +41,8 @@ func (c *TokenManager) Set(s string) {
 
 // fetchToken is a unified helper for all Twitch token requests.
 func fetchToken(data url.Values) (*tokenResponse, error) {
-	resp, err := http.PostForm(tokenURL, data)
+	tokenHTTPClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := tokenHTTPClient.PostForm(tokenURL, data)
 	if err != nil {
 		return nil, err
 	}

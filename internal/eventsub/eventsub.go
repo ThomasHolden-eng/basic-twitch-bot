@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -75,6 +76,7 @@ type EventSubClient struct {
 	disconnect     chan bool            // The channel to signal disconnection
 
 	keepaliveTimeout time.Duration // Set from the session_welcome payload
+	reconnecting     bool          // state variable to track reconnects
 }
 
 // NewEventSubClient creates a new EventSub client.
@@ -107,8 +109,6 @@ func (e *EventSubClient) Connect() error {
 		return fmt.Errorf("eventsub: apiClient and userToken are required")
 	}
 
-	// NOTE: assumes the user type returned here exposes an ID field —
-	// adjust to match whatever api.GetUserByLogin actually returns.
 	broadcaster, err := e.apiClient.GetUserByLogin(e.channel)
 	if err != nil {
 		return fmt.Errorf("eventsub: resolving broadcaster: %w", err)
@@ -127,6 +127,7 @@ func (e *EventSubClient) Connect() error {
 // Close closes the connection to the EventSub server.
 func (e *EventSubClient) Close() {
 	if e.conn != nil {
+		e.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = writeFrame(e.conn, opClose, nil)
 		e.conn.Close()
 	}
@@ -135,10 +136,16 @@ func (e *EventSubClient) Close() {
 // dial opens a TLS connection to host and performs the WebSocket upgrade
 // handshake against path, storing the resulting connection and reader on e.
 func (e *EventSubClient) dial(host, path string) error {
-	conn, err := tls.Dial("tcp", host, &tls.Config{})
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 10 * time.Second},
+		"tcp", host, &tls.Config{},
+	)
 	if err != nil {
 		return fmt.Errorf("eventsub: dialing %s: %w", host, err)
 	}
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetDeadline(time.Time{})
 
 	// The same bufio.Reader is used for the handshake response and all
 	// subsequent frame reads, since bufio may buffer bytes past the
@@ -151,6 +158,7 @@ func (e *EventSubClient) dial(host, path string) error {
 
 	e.conn = conn
 	e.reader = reader
+
 	return nil
 }
 
@@ -279,8 +287,10 @@ func readFrame(r *bufio.Reader) (wsFrame, error) {
 }
 
 // writeFrame writes a single, masked WebSocket frame. Per RFC 6455, every
-// frame sent from client to server MUST be masked.
-func writeFrame(w io.Writer, opcode byte, payload []byte) error {
+// frame sent from client to server MUST be masked. A write deadline is
+// applied so a stalled connection (e.g. after the machine sleeps) fails
+// fast instead of blocking forever.
+func writeFrame(conn net.Conn, opcode byte, payload []byte) error {
 	header := []byte{0x80 | opcode} // FIN=1, RSV=0
 
 	maskKey := make([]byte, 4)
@@ -310,10 +320,15 @@ func writeFrame(w io.Writer, opcode byte, payload []byte) error {
 		masked[i] = payload[i] ^ maskKey[i%4]
 	}
 
-	if _, err := w.Write(header); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+	defer conn.SetWriteDeadline(time.Time{}) // clear the deadline once done, so it doesn't affect unrelated future writes
+
+	if _, err := conn.Write(header); err != nil {
 		return err
 	}
-	_, err := w.Write(masked)
+	_, err := conn.Write(masked)
 	return err
 }
 
@@ -385,11 +400,20 @@ func (e *EventSubClient) readLoop() {
 }
 
 func (e *EventSubClient) triggerDisconnect() {
-	select {
-	case <-e.disconnect:
-	default:
-		close(e.disconnect)
-	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Recovered from race in EventSubClient")
+			}
+		}()
+
+		select {
+		case <-e.disconnect:
+		default:
+			close(e.disconnect)
+		}
+	}()
+
 	e.Close()
 }
 
@@ -431,6 +455,13 @@ func (e *EventSubClient) handleWelcome(payload json.RawMessage) {
 			KeepaliveTimeoutSeconds int    `json:"keepalive_timeout_seconds"`
 		} `json:"session"`
 	}
+
+	if e.reconnecting {
+		e.reconnecting = false
+		log.Printf("eventsub: reconnection successful")
+		return // subscription already migrated by Twitch; nothing to do
+	}
+
 	if err := json.Unmarshal(payload, &p); err != nil {
 		log.Printf("eventsub: error parsing welcome payload: %v", err)
 		return
@@ -514,7 +545,8 @@ func (e *EventSubClient) handleNotification(payload json.RawMessage) {
 		return // ignore subscription types we didn't ask for
 	}
 
-	e.redemptionChan <- RedemptionEvent{
+	select {
+	case e.redemptionChan <- RedemptionEvent{
 		UserID:      p.Event.UserID,
 		UserLogin:   p.Event.UserLogin,
 		UserName:    p.Event.UserName,
@@ -524,6 +556,11 @@ func (e *EventSubClient) handleNotification(payload json.RawMessage) {
 		UserInput:   p.Event.UserInput,
 		Status:      p.Event.Status,
 		RedeemedAt:  p.Event.RedeemedAt,
+	}:
+	case <-e.disconnect:
+		log.Printf("disconnecting: dropped event")
+		e.triggerDisconnect()
+		return
 	}
 }
 
@@ -550,6 +587,7 @@ func (e *EventSubClient) handleReconnect(payload json.RawMessage) {
 		return
 	}
 
+	e.reconnecting = true
 	oldConn := e.conn
 
 	if err := e.dial(host, path); err != nil {

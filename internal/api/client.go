@@ -43,12 +43,11 @@ func NewAPIClient(username, clientID string, userToken, appToken *TokenManager) 
 		appTokenManager: appToken,
 		userToken:       userToken,
 		rateLimit:       newTokenBucket(),
-		httpClient:      &http.Client{},
+		httpClient:      &http.Client{Timeout: 15 * time.Second},
 	}
 	if err := client.setUserID(username); err != nil {
 		return nil, fmt.Errorf("resolve bot user id: %w", err)
 	}
-	go client.rateLimit.startTokenTimer()
 
 	return client, nil
 }
@@ -141,6 +140,14 @@ func (c *APIClient) doRequestWithRetry(req *http.Request, maxRetriesOpt ...int) 
 		resp, err = c.httpClient.Do(req)
 		if err == nil {
 			return resp, nil
+		}
+
+		if req.GetBody != nil {
+			newBody, bodyErr := req.GetBody()
+			if bodyErr != nil {
+				return nil, fmt.Errorf("failed to get request body for retry: %w", bodyErr)
+			}
+			req.Body = newBody
 		}
 
 		delay := baseDelay * time.Duration(math.Pow(2, float64(i)))
@@ -379,6 +386,8 @@ func (c *APIClient) prepClip(url string) {
 }
 
 // SendChatMessage sends a message to a Twitch channel using the Helix API.
+//
+// Return an error for empty token bucket or message failure.
 func (c *APIClient) SendChatMessage(broadcasterID, message string) error {
 	url := helixBaseURL + "/chat/messages"
 

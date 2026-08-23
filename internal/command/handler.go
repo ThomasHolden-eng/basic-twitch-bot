@@ -24,15 +24,19 @@ type CommandFunc func(h *CommandHandler, user chat.User, args []string) (string,
 
 // CommandHandler manages and executes commands
 type CommandHandler struct {
-	commands map[string]CommandFunc
-	userMap  map[string]time.Time
+	commands      map[string]CommandFunc
+	redeemActions map[string]CommandFunc
+	userMap       map[string]time.Time
 
 	broadcaster *api.TwitchUser
 
-	database     *state.KVStorage
-	config       *state.SafeConfig
-	apiClient    *api.APIClient
-	userMapMutex sync.Mutex
+	messagesSent int // messagesSent records the total messages sent since the last timed message
+
+	database          *state.KVStorage
+	config            *state.SafeConfig
+	apiClient         *api.APIClient
+	userMapMutex      sync.Mutex
+	messagesSentMutex sync.Mutex
 }
 
 // NewCommandHandler creates a new command handler.
@@ -63,18 +67,24 @@ func NewCommandHandler(
 	}
 
 	return &CommandHandler{
-		commands:    make(map[string]CommandFunc),
-		userMap:     make(map[string]time.Time),
-		broadcaster: broadcaster,
-		database:    database,
-		config:      cfg,
-		apiClient:   apiClient,
+		commands:      make(map[string]CommandFunc),
+		redeemActions: make(map[string]CommandFunc),
+		userMap:       make(map[string]time.Time),
+		broadcaster:   broadcaster,
+		database:      database,
+		config:        cfg,
+		apiClient:     apiClient,
 	}, nil
 }
 
 // Register adds a new command to the handler
 func (h *CommandHandler) Register(name string, fn CommandFunc) {
 	h.commands[name] = fn
+}
+
+// RegisterRedeem adds a new redeem based action to the handler
+func (h *CommandHandler) RegisterRedeem(name string, fn CommandFunc) {
+	h.redeemActions[name] = fn
 }
 
 // RemoveRecentUsers removes users with activity more than 1 second ago
@@ -101,9 +111,14 @@ func (h *CommandHandler) Handle(message chat.Message) {
 
 	user := message.User
 	content := message.Text
-	messagesSent++
 
+	h.messagesSentMutex.Lock()
+	h.messagesSent++
+	h.messagesSentMutex.Unlock()
+
+	h.userMapMutex.Lock()
 	_, ok := h.userMap[user.Name]
+	h.userMapMutex.Unlock()
 	if !strings.HasPrefix(content, "!") || ok {
 		return
 	}
@@ -122,9 +137,10 @@ func (h *CommandHandler) Handle(message chat.Message) {
 	h.userMap[user.Name] = time.Now()
 	h.userMapMutex.Unlock()
 
-	h.handleSend(cmd, user, args)
+	go h.handleSend(cmd, user, args)
 }
 
+// handleSend sends a response to chat
 func (h *CommandHandler) handleSend(cmd CommandFunc, user chat.User, args []string) {
 	out, err := cmd(h, user, args)
 	if err != nil {
@@ -167,11 +183,10 @@ func (h *CommandHandler) Nickname() string {
 	return h.ChannelName()
 }
 
-// Handle processes a single incoming chat message.
+// HandleRedeem processes a single incoming redemption event
 //
-// It applies a 1-second per-user debounce, parses the command name and
-// args, looks up the registered handler, and (if the handler returns a
-// non-empty string) sends the result back to chat via the API client.
+// if the handler returns a non-empty string sends the result back to
+// chat via the API client.
 //
 // Exported so the application's main loop can drive it directly.
 func (h *CommandHandler) HandleRedeem(event eventsub.RedemptionEvent) {
@@ -182,11 +197,11 @@ func (h *CommandHandler) HandleRedeem(event eventsub.RedemptionEvent) {
 
 	log.Printf("%v", redeemName)
 
-	cmd, found := h.commands[redeemName]
+	cmd, found := h.redeemActions[redeemName]
 	if !found {
 		return
 	}
 	log.Printf("redeem command, '%s' found", redeemName)
 
-	h.handleSend(cmd, user, []string{})
+	go h.handleSend(cmd, user, []string{})
 }

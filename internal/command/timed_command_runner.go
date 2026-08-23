@@ -2,22 +2,22 @@ package command
 
 import (
 	"log"
+	"sync"
 	"time"
 	"twitchbotv2/internal/chat"
 )
 
 // CommandWheel is a structure to whole information necessary for looping commands
 type CommandWheel struct {
-	commands []CommandFunc // commands is the list of commands on rotation
-	timespan time.Duration // timespan is the time between commands
-	pointer  int           // pointer points to the current command to run
+	commands    []CommandFunc // commands is the list of commands on rotation
+	timespan    time.Duration // timespan is the time between commands
+	pointer     int           // pointer points to the current command to run
+	pointerLock sync.Mutex    // pointerLock is a mutex for the pointer
 
-	handler *CommandHandler
+	handler *CommandHandler // handler is the command handler
 
-	exit chan bool
+	exit chan bool // exit is the channel to exit the loop
 }
-
-var messagesSent int // messagesSent records the total messages sent since the last timed message
 
 // NewCommandWheel creates a new wheel of timed commands
 func NewCommandWheel(
@@ -26,10 +26,13 @@ func NewCommandWheel(
 
 	commands := make([]CommandFunc, 0, len(commandStrings))
 	for _, command := range commandStrings {
-		commands = append(commands, handler.commands[command])
+		cmdFunc, ok := handler.commands[command]
+		if ok {
+			commands = append(commands, cmdFunc)
+		}
 	}
 
-	messagesSent = 0
+	handler.messagesSent = 0
 
 	return &CommandWheel{
 		commands: commands,
@@ -53,14 +56,18 @@ func (cw *CommandWheel) StartTimedCommands() {
 	}
 
 	ticker := time.NewTicker(cw.timespan)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			if messagesSent < 3 {
+			cw.handler.messagesSentMutex.Lock()
+			if cw.handler.messagesSent < 3 {
+				cw.handler.messagesSentMutex.Unlock()
 				continue
 			}
-			messagesSent = 0
+			cw.handler.messagesSent = 0
+			cw.handler.messagesSentMutex.Unlock()
 
 			go cw.sendTimerMessage(bot)
 		case <-cw.exit:
@@ -72,16 +79,10 @@ func (cw *CommandWheel) StartTimedCommands() {
 
 // sendTimerMessage sends the current pointed to message to chat
 func (cw *CommandWheel) sendTimerMessage(bot chat.User) {
-	response, err := cw.commands[cw.pointer](cw.handler, bot, []string{})
-	if err != nil {
-		log.Printf("Error executing timed command: %v", err)
-	}
-	if response != "" {
-		log.Printf("Sending timed command at pos %d", cw.pointer)
-		cw.handler.handleSend(cw.commands[cw.pointer], bot, []string{})
-	}
-	if err != nil {
-		log.Printf("Error sending timed message in chat: %v", err)
-	}
+	cw.pointerLock.Lock()
+	defer cw.pointerLock.Unlock()
+	log.Printf("Sending timed command at pos %d", cw.pointer)
+	cw.handler.handleSend(cw.commands[cw.pointer], bot, []string{})
+
 	cw.pointer = (cw.pointer + 1) % len(cw.commands)
 }
