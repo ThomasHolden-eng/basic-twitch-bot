@@ -1,74 +1,159 @@
 # Go Twitch Bot
 
-This is a modular and lightweight Twitch bot written in Go. It uses a secure, browser-based authentication flow to connect to your Twitch account.
+A modular Twitch chatbot written in Go. The bot authenticates via the
+Twitch OAuth2 Authorization Code flow, joins a single channel over IRC,
+subscribes to channel-point redemptions over EventSub, and dispatches
+chat messages and redemption events to handlers. State is persisted to
+a local SQLite database (`state.db`).
+
+The bot is intended to be operated by a streamer who runs the bot on
+their own machine. The bot account and the channel account are usually
+two different Twitch accounts.
+
+The repository ships without any commands registered — `dispatch.go`
+is intentionally left for you to fill in. See [Adding Commands](#adding-commands)
+below.
 
 ## 1. Register a Twitch Application
 
-Before you can use the bot, you need to register it as an "application" on Twitch to get a Client ID.
+The bot authenticates through a Twitch application that you register
+under your **channel** account (the account that owns the stream you
+want the bot to join).
 
-Go to the [Twitch Developer Console](https://dev.twitch.tv/console) and log in with the account you wish for the bot to operate for, i.e. your main twitch channel.
-Look at Applications on the right, then click Register Your Application.
+1. Open the [Twitch Developer Console](https://dev.twitch.tv/console).
+2. Click **Register Your Application**.
+3. Fill in:
+   - **Name:** something unique.
+   - **OAuth Redirect URLs:** `http://localhost:8080/callback`
+   - **Category:** Chat Bot
+   - **Client Type:** Confidential
+4. Click **Create**, then **Manage** on the new application.
+5. Copy the **Client ID** and generate a **Client Secret**. You will
+   paste both into `config.json` in the next step.
 
-Fill out the form:
-Name: Give your bot a unique name.
-OAuth Redirect URLs: http://localhost:8080/callback
-Category: Chat Bot
-Client Type: Confidential
-Click Create.
+> If you already have a different Twitch application for the bot
+> account, you can register the bot account's application instead —
+> the redirect URL just has to match. The same `client_id` and
+> `client_secret` go into `config.json` regardless of which account
+> registered the application.
 
-You will now see your application's details. Press manage, and copy the Client ID and generate a Client Secret. You will need them in the next step.
+## 2. Fill in `config.json`
 
-## 2. Configure the Bot
+The bot reads its configuration from `config.json` in the working
+directory. On first run, if the file does not exist, a placeholder is
+written and the bot exits with an instructive message. Edit the
+placeholder with your real values before running again.
 
-When you first run the bot, it will create a config.json file in the same directory.
-Open this file and fill in the details:
+| Field | Required | Description |
+| --- | --- | --- |
+| `username` | yes | The Twitch account the **bot** logs in as. Usually a separate account from the channel. |
+| `client_id` | yes | The Client ID from the Twitch Developer Console (step 1). |
+| `client_secret` | yes | The Client Secret from the Twitch Developer Console (step 1). |
+| `broadcaster_id` | yes | The Twitch **user ID** of the channel owner. This is *not* the channel login; resolve it with `https://api.twitch.tv/helix/users?login=<channel>` using your app's token, or copy it from `twitch.tv/<channel>`'s page source. |
+| `broadcaster_secret` | yes | The Client Secret of a **second** Twitch application registered under the broadcaster's own account, used to authorize the EventSub subscription for channel-point redemptions. |
+| `channel` | yes | The login name of the channel the bot should join. |
+| `fyrewire_key` | no | Reserved for future use. |
+| `val_user`, `val_tag`, `val_region` | no | Reserved for future use. |
+| `discord_link`, `tiktok_link`, `instagram_link`, `twitter_link`, `youtube_link`, `donate_link` | no | Reserved for future use. |
+| `nickname` | no | Reserved for future use. |
 
-username: The username of the Twitch account the bot will use to send messages.
-client_id: The Client ID you copied from the Twitch Developer Console in the previous step.
-client_password: The Client Password also copied from the Developer Console, be careful to keep this hidden.
-channel: The name of the Twitch channel you want the bot to join (your main account).
-The rest are details necessary for the use of some commands, and not necessary if you don't need these.
+Example:
 
-Example config.json:
+```json
+{
+  "username": "my_bot_account",
+  "client_id": "ab1cdef23ghijk45lmnopq67rstu",
+  "client_secret": "abc1d2efg45hijk67lmnopqrstuvwx",
+  "broadcaster_id": "987654321",
+  "broadcaster_secret": "zxy1w2vut3srqponm8lkjihgfedcba",
+  "channel": "the_streamer_channel",
+  "fyrewire_key": "",
+  "val_user": "",
+  "val_tag": "",
+  "val_region": "",
+  "discord_link": "",
+  "tiktok_link": "",
+  "instagram_link": "",
+  "twitter_link": "",
+  "youtube_link": "",
+  "donate_link": "",
+  "nickname": ""
+}
+```
 
-    {
-    "username": "my_bot_account_name",
-    "client_id": "ab1cdef23ghijk45lmnopq67rstu",
-    "client_secret": "abc1d2efg45hijk67lmnopqrstuvwx"
-    "channel": "the_streamer_channel_name"
-    "fyrewire_key": "52a1e702ab7362b7e5bc8c3dfe6f8e8f",
-    "val_user": "<Streamer_valorant_username>",
-    "val_tag": "<Streamer_valorant_tag>",
-    "val_region": "<Streamer_valorant_region>",
-    "discord_link": "<Streamer_discord_link>",
-    "tiktok_link": "<Streamer_tiktok_link>",
-    "instagram_link": "<Streamer_instagram_link>",
-    "twitter_link": "<Streamer_twitter_link>",
-    "youtube_link": "<Streamer_youtube_link>",
-    "donate_link": "<Streamer_donations_link>",
-    "nickname": "<Streamer_nickname>"
-    }
+All values must be lower case where applicable. Twitch login names are
+case-insensitive at the protocol level but the bot stores them as
+written.
 
-Ensuring everything in your config.json is lower case.
+## 3. Run the Bot
 
-## 3. Running the Bot
+Requires Go 1.25 or newer.
 
-Make sure you have Go installed on your system (download here).
-Open your terminal, navigate to the directory containing the Go files, and run the application:
+From the repository root:
 
-    go run .
+```
+go run .
+```
 
-During launch, your default web browser will open a Twitch authorization page.
-Log in to the account you want the bot to use (your username from the config) and click Authorize.
-You will be redirected to a page that says "Authentication successful!". You can close the browser tab.
-The bot is now authenticated and will connect to the specified Twitch channel.
+On first run for each `client_id`, the bot opens your default browser
+to a Twitch authorization page. **Log in with the bot account** (the
+one in `config.json`'s `username` field) and click **Authorize**. You
+will be redirected to a page that says "Authentication Successful!" —
+close that tab.
 
-## Adding New Commands
+A second browser window opens for the broadcaster's EventSub
+authorization — log in there **with the channel owner account**.
 
-Adding commands is simple:
-Open commands.go.
-Create a new function with the signature 
+Once both OAuth flows succeed, the bot joins the channel and starts
+the EventSub subscription. Logs go to `log.txt` (rotated to
+`old_log.txt` on each launch) and to stdout.
 
-    func(user User, args []string) (string, error)
+To stop the bot, press Ctrl-C. The bot drains its goroutines and
+exits cleanly.
 
-In the RegisterCommands function, register your new command with handler.Register("yourcommand", yourCommandFunction).
+## Adding Commands
+
+Commands are not included in the repository. To add one, write a
+function with the signature
+
+```go
+func(h *command.CommandHandler, user chat.User, args []string) (string, error)
+```
+
+Returning a non-empty string sends it to chat as the bot. Register it
+in `internal/command/dispatch.go`'s `RegisterCommands`:
+
+```go
+h.Register("hello", func(h *command.CommandHandler, user chat.User, args []string) (string, error) {
+    return fmt.Sprintf("hello, @%s!", user.Name), nil
+})
+```
+
+Commands have access to:
+
+- `h.config` — the `SafeConfig` loaded from `config.json`.
+- `h.broadcaster` — the resolved `*api.TwitchUser` for the channel
+  owner (used for `h.broadcaster.ID` in Helix calls that require the
+  broadcaster's user ID).
+- `h.database` — a `*state.KVStorage` for persisting counters and
+  per-user state across restarts.
+- `h.apiClient` — for Helix API calls and sending chat messages.
+- `h.ChannelName()` and `h.Nickname()` — convenience accessors that
+  return empty / fallback values rather than panicking on a nil
+  broadcaster.
+
+Channel-point redemptions are registered separately with
+`h.RegisterRedeem("reward title", fn)` and trigger when a viewer
+redeems a custom reward whose title matches.
+
+## Future Work
+
+Today, adding or changing a command requires editing
+`internal/command/dispatch.go` and rebuilding the binary. A planned
+improvement is to lift the command registry out of compile-time
+constants: store command definitions — name, response template,
+enabled flag — as runtime variables loaded from a config file or a
+database table, so a streamer can add or tweak commands without
+recompiling and redeploying the bot. The existing
+`command.CommandHandler.Register` API is already shaped to support
+this; only the source of the registration list needs to change.
