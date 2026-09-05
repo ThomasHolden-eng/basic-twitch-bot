@@ -128,7 +128,7 @@ func run(backoff bool) error {
 	if err != nil {
 		return fmt.Errorf("command handler: %w", err)
 	}
-	command.RegisterCommands(handler)
+	command.LoadCommands(handler, "commands.json")
 
 	timedRunner := command.NewCommandWheel(time.Minute*10, handler, disconnect,
 		"donate", "follow", "socials", "today")

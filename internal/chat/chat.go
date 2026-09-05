@@ -166,7 +166,10 @@ func (c *TwitchClient) readMessages(channelName string) {
 		}
 
 		if strings.Contains(line, "PRIVMSG") {
-			user, message, channel := parseMessage(line)
+			user, message, channel := parseMessage(line, c.username)
+			if message == "" {
+				return
+			}
 			if channelName == channel {
 				select {
 				case c.messageChannel <- Message{User: user, Text: message}:
@@ -199,7 +202,7 @@ func (c *TwitchClient) triggerDisconnect() {
 }
 
 // parseMessage extracts user info and the message from a raw IRC line
-func parseMessage(line string) (User, string, string) {
+func parseMessage(line, botname string) (User, string, string) {
 	user := User{Badges: make(map[string]string)}
 	var message string
 	var channel string
@@ -222,6 +225,9 @@ func parseMessage(line string) (User, string, string) {
 					user.ID = tagParts[1]
 				case "display-name":
 					user.Name = tagParts[1]
+					if strings.ToLower(user.Name) == botname {
+						return User{}, "", ""
+					}
 				case "badges":
 					// badges look like: broadcaster/1,moderator/1
 					badgeParts := strings.Split(tagParts[1], ",")
