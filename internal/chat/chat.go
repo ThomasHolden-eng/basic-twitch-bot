@@ -25,6 +25,7 @@ type User struct {
 	ID     string            // User ID
 	Name   string            // Display name
 	Badges map[string]string // Badge information
+	IsMod  bool              // True if the user is a moderator
 }
 
 // Message is a chat message routed to the dispatcher.
@@ -168,7 +169,7 @@ func (c *TwitchClient) readMessages(channelName string) {
 		if strings.Contains(line, "PRIVMSG") {
 			user, message, channel := parseMessage(line, c.username)
 			if message == "" {
-				return
+				continue
 			}
 			if channelName == channel {
 				select {
@@ -203,16 +204,27 @@ func (c *TwitchClient) triggerDisconnect() {
 
 // parseMessage extracts user info and the message from a raw IRC line
 func parseMessage(line, botname string) (User, string, string) {
-	user := User{Badges: make(map[string]string)}
-	var message string
-	var channel string
-
 	parts := strings.SplitN(line, " ", 4)
-
 	if len(parts) < 4 {
 		return User{}, "", ""
 	}
 	// parts[0] = tags, parts[1] = :user!user@user.tmi.twitch.tv, parts[2] = PRIVMSG, parts[3] = #channel :message
+
+	// Fast bot exclusion
+	if botname != "" {
+		sender := parts[1]
+		strings.TrimPrefix(sender, ":")
+		if bang := strings.IndexByte(sender, '!'); bang != -1 {
+			sender = sender[:bang]
+		}
+		if strings.EqualFold(sender, botname) {
+			return User{}, "", ""
+		}
+	}
+
+	user := User{Badges: make(map[string]string)}
+	var message string
+	var channel string
 
 	if strings.HasPrefix(parts[0], "@") {
 		tagsRaw := strings.TrimPrefix(parts[0], "@")
@@ -225,9 +237,10 @@ func parseMessage(line, botname string) (User, string, string) {
 					user.ID = tagParts[1]
 				case "display-name":
 					user.Name = tagParts[1]
-					if strings.ToLower(user.Name) == botname {
-						return User{}, "", ""
-					}
+				case "mod":
+					// Twitch sets this to "1" for BOTH regular
+					// moderators and lead moderators ("supermods")
+					user.IsMod = tagParts[1] == "1"
 				case "badges":
 					// badges look like: broadcaster/1,moderator/1
 					badgeParts := strings.Split(tagParts[1], ",")
@@ -255,6 +268,7 @@ func parseMessage(line, botname string) (User, string, string) {
 		message = messageParts[1]
 	}
 
+	log.Println(user, message, channel)
 	return user, message, channel
 }
 

@@ -18,14 +18,13 @@ func requireConfig(h *CommandHandler) (*state.SafeConfig, error) {
 
 // isMod checks if a user is a moderator or the broadcaster.
 func isMod(user chat.User) bool {
-	if _, ok := user.Badges["moderator"]; ok {
+	if user.IsMod {
 		return true
 	}
-	if _, ok := user.Badges["broadcaster"]; ok {
-		return true
-	}
-	if _, ok := user.Badges["lead_moderator"]; ok {
-		return true
+	for _, badge := range []string{"broadcaster", "moderator", "lead_moderator"} {
+		if _, ok := user.Badges[badge]; ok {
+			return true
+		}
 	}
 	return false
 }
