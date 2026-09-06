@@ -10,7 +10,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -20,6 +19,7 @@ import (
 	"twitchbotv2/internal/api"
 	"twitchbotv2/internal/chat"
 	"twitchbotv2/internal/command"
+	"twitchbotv2/internal/disconnect"
 	"twitchbotv2/internal/eventsub"
 	"twitchbotv2/internal/state"
 )
@@ -60,7 +60,7 @@ func run(backoff bool) error {
 		return errors.New("config.json is missing required fields (username, client_id, client_secret, channel)")
 	}
 
-	disconnect := make(chan bool)
+	disconnect := disconnect.NewDisconnector()
 
 	userToken, err := api.InitUserToken(cfg.ClientID, cfg.ClientSecret,
 		"chat:read+chat:edit+user:write:chat+user:bot+channel:manage:broadcast+"+
@@ -146,44 +146,11 @@ func run(backoff bool) error {
 			go handler.Handle(msg)
 		case event := <-eventCh:
 			go handler.HandleRedeem(event)
-		case <-disconnect:
+		case <-disconnect.Done():
 			return fmt.Errorf("client unexpectedly disconnected")
 		case sig := <-sigCh:
 			log.Printf("received %v, shutting down", sig)
 			return nil
 		}
-	}
-}
-
-func setupLogging() (func(), error) {
-	if err := os.Rename("log.txt", "old_log.txt"); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("rotate log file: %w", err)
-	}
-
-	logFile, err := os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open log file: %w", err)
-	}
-
-	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-
-	return func() { logFile.Close() }, nil
-}
-
-// runWithTimeout runs closeFn in a goroutine and waits up to timeout for
-// it to finish. If it doesn't finish in time, runWithTimeout returns
-// anyway and logs a warning. This aims to ensure a goroutine cannot
-// block shutdown. Intended for use with defer.
-func runWithTimeout(name string, closeFn func(), timeout time.Duration) {
-	done := make(chan struct{})
-	go func() {
-		closeFn()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(timeout):
-		log.Printf("%s: close did not finish within %v, abandoning", name, timeout)
 	}
 }

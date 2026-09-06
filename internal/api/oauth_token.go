@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"twitchbotv2/internal/disconnect"
 	"twitchbotv2/internal/state"
 )
 
@@ -32,7 +33,7 @@ var refreshFile *state.RefreshFile = state.NewRefreshFile()
 // parameter (CSRF protection), and exchanges the code for tokens. The
 // function blocks until the user completes the flow, an error occurs, or
 // the 2-minute timeout elapses.
-func InitUserToken(clientID, clientSecret, permissions string, disconnect chan bool) (*TokenManager, error) {
+func InitUserToken(clientID, clientSecret, permissions string, disconnect *disconnect.Disconnector) (*TokenManager, error) {
 	if refreshToken, err := refreshFile.LoadRefreshToken(clientID); err == nil && refreshToken != nil {
 		tMan := &TokenManager{token: new(string)}
 		go refreshTokenFlow(
@@ -139,7 +140,7 @@ func InitUserToken(clientID, clientSecret, permissions string, disconnect chan b
 }
 
 // exchangeCodeForToken exchanges the authorization code for an access token.
-func exchangeCodeForToken(clientID, clientSecret, code string, disconnect chan bool) (*TokenManager, error) {
+func exchangeCodeForToken(clientID, clientSecret, code string, disconnect *disconnect.Disconnector) (*TokenManager, error) {
 	tokenResp, err := fetchToken(url.Values{
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
@@ -167,7 +168,7 @@ func exchangeCodeForToken(clientID, clientSecret, code string, disconnect chan b
 
 // refreshTokenFlow handles the OAuth2 Refresh Token Flow.
 func refreshTokenFlow(clientID, clientSecret, refresh_token string,
-	oauth_tokenManager *TokenManager, expiry_d time.Duration, disconnect chan bool) {
+	oauth_tokenManager *TokenManager, expiry_d time.Duration, disconnect *disconnect.Disconnector) {
 
 	log.Printf("Oauth token will be refreshed in %v", expiry_d-time.Minute)
 	refresh_timer := time.NewTicker(expiry_d - time.Minute)
@@ -178,7 +179,7 @@ func refreshTokenFlow(clientID, clientSecret, refresh_token string,
 
 	for {
 		select {
-		case <-disconnect:
+		case <-disconnect.Done():
 			return
 		case <-refresh_timer.C:
 			// proceed with execution

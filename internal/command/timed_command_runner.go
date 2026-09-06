@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 	"twitchbotv2/internal/chat"
+	"twitchbotv2/internal/disconnect"
 )
 
 // CommandWheel is a structure to whole information necessary for looping commands
@@ -16,13 +17,13 @@ type CommandWheel struct {
 
 	handler *CommandHandler // handler is the command handler
 
-	exit chan bool // exit is the channel to exit the loop
+	exit *disconnect.Disconnector // exit is the channel to exit the loop
 }
 
 // NewCommandWheel creates a new wheel of timed commands
 func NewCommandWheel(
 	timespan time.Duration, handler *CommandHandler,
-	connection chan bool, commandStrings ...string) *CommandWheel {
+	connection *disconnect.Disconnector, commandStrings ...string) *CommandWheel {
 
 	commands := make([]CommandFunc, 0, len(commandStrings))
 	for _, command := range commandStrings {
@@ -70,7 +71,7 @@ func (cw *CommandWheel) StartTimedCommands() {
 			cw.handler.messagesSentMutex.Unlock()
 
 			go cw.sendTimerMessage(bot)
-		case <-cw.exit:
+		case <-cw.exit.Done():
 			log.Println("Timed command runner successfully terminated.")
 			return
 		}

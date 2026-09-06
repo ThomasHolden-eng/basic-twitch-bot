@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"twitchbotv2/internal/api"
+	"twitchbotv2/internal/disconnect"
 )
 
 const (
@@ -72,8 +73,8 @@ type EventSubClient struct {
 
 	httpClient *http.Client
 
-	redemptionChan chan RedemptionEvent // The channel for incoming redemption events
-	disconnect     chan bool            // The channel to signal disconnection
+	redemptionChan chan RedemptionEvent     // The channel for incoming redemption events
+	disconnect     *disconnect.Disconnector // The channel to signal disconnection
 
 	keepaliveTimeout time.Duration // Set from the session_welcome payload
 	reconnecting     bool          // state variable to track reconnects
@@ -88,7 +89,7 @@ func NewEventSubClient(
 	clientID, channel string,
 	apiClient *api.APIClient,
 	userToken *api.TokenManager,
-	disconnect chan bool,
+	disconnect *disconnect.Disconnector,
 	redemptionChan chan RedemptionEvent,
 ) *EventSubClient {
 	return &EventSubClient{
@@ -400,19 +401,7 @@ func (e *EventSubClient) readLoop() {
 }
 
 func (e *EventSubClient) triggerDisconnect() {
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("Recovered from race in EventSubClient")
-			}
-		}()
-
-		select {
-		case <-e.disconnect:
-		default:
-			close(e.disconnect)
-		}
-	}()
+	e.disconnect.Trigger()
 
 	e.Close()
 }
@@ -557,7 +546,7 @@ func (e *EventSubClient) handleNotification(payload json.RawMessage) {
 		Status:      p.Event.Status,
 		RedeemedAt:  p.Event.RedeemedAt,
 	}:
-	case <-e.disconnect:
+	case <-e.disconnect.Done():
 		log.Printf("disconnecting: dropped event")
 		e.triggerDisconnect()
 		return
